@@ -1,0 +1,1909 @@
+---
+title: "01_alpha_beta_diversity_analysis"
+title-block-banner: true
+author:
+  - name: Gong Yuhang
+date: 2025-12-27
+toc: true
+toc-depth: 4
+number-sections: true
+code-fold: true
+code-line-numbers: true
+code-tools: true
+format: 
+  html:
+    embed-resources: true
+    smooth-scroll: true
+    page-layout: full
+reference-location: section
+citation-location: document
+params:
+  name: "01_alpha_beta_diversity_analysis"
+---
+
+**Updated: `r format(Sys.time(), '%Y-%m-%d %H:%M:%S', tz = 'CET')` CET.**
+
+The purpose of this document is:
+本文档是项目 pc047 (vCagAepitope) 的首个核心分析模块。
+其主要目标是评估 CagA 依赖性感染（即对比 ApcMUT_HpWT 致瘤组与 ApcMUT_HpKO 对照组）是否以及如何显著改变了小鼠肠道的群落复杂度。
+
+```{r}
+#| label: params
+#| eval: !expr interactive()
+#| include: false
+params <- list(name = "01_alpha_beta_diversity_analysis")
+```
+
+```{r}
+#| label: setup
+#| message: false
+#| include: false
+#| warning: false
+wd <- "analyses"
+if (basename(getwd()) != wd) {
+  setwd(here::here(wd))
+}
+here::i_am(paste0(params$name, ".qmd"), uuid = "50d69c11-b05a-4df7-a64e-de75a8a3850b")
+projthis::proj_create_dir_target(params$name, clean = FALSE)
+path_target <- projthis::proj_path_target(params$name)
+path_source <- projthis::proj_path_source(params$name)
+path_raw <- path_source("00-raw")
+path_resource <- here::here(path_raw, "d00-resource")
+path_data <- here::here(path_raw, paste0("d", params$name))
+dir.create(path_raw, recursive = TRUE, showWarnings = FALSE)
+dir.create(path_data, recursive = TRUE, showWarnings = FALSE)
+dir.create(path_resource, recursive = TRUE, showWarnings = FALSE)
+```
+
+## Packages
+```{r}
+#| label: packages
+#| message: false
+suppressPackageStartupMessages({
+  library(here)
+  library(conflicted)
+  library(tidyverse)
+  library(data.table)
+  library(mia)
+  library(TreeSummarizedExperiment)
+  library(readxl)
+  library(miaViz)
+  library(scuttle)
+  library(patchwork)
+  library(MatrixGenerics)
+  library(stringr)
+  library(ggpubr)
+  library(scater)
+  library(vegan)
+  library(ggplot2)
+  library(ANCOMBC)
+  library(ALDEx2)
+  devtools::load_all()
+})
+
+# 解决命名空间冲突
+conflicts_prefer(base::setdiff)
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(dplyr::select)
+conflicts_prefer(dplyr::lag)
+conflicts_prefer(dplyr::first)
+conflicts_prefer(ggplot2::annotate)
+
+set.seed(20261)
+```
+
+## Tasks
+
+This section is designated for your workflow implementation. **Please write all your analysis and processing code here.**
+
+Maintaining your code within this section ensures a clean project structure and facilitates reproducibility. We recommend organizing your workflow into modular tasks—such as data cleaning, analysis, and visualization—using distinct code chunks.
+
+Below is an example structure to get you started:
+
+
+# Part 1 Standard Species & Genus
+## 1.导入数据并构建 TreeSE
+```{r}
+# Step 1：定义导入文件函数
+read_bracken_standard_species <- function(path) {
+  files <- list.files(path, pattern = "_S\\.tsv$", full.names = TRUE)
+
+  abundance_list <- lapply(files, function(f) {
+    df <- readr::read_tsv(f, show_col_types = FALSE)
+
+    sample_id <- basename(f) |> stringr::str_extract("^[^_]+")
+
+    tibble(
+      feature = df$name,
+      abundance = df$new_est_reads,
+      sample = sample_id
+    )
+  })
+
+  bind_rows(abundance_list)
+}
+
+# Step 2：构建count matrix
+bracken_long_standard_species <- read_bracken_standard_species(
+  here::here(
+    "data",
+    "00-raw",
+    "d01_alpha_beta_diversity_analysis",
+    "bracken_standard"
+  )
+)
+
+count_mat_standard_species <- bracken_long_standard_species |>
+  pivot_wider(
+    names_from  = sample,
+    values_from = abundance,
+    values_fill = 0
+  ) |>
+  column_to_rownames("feature") |>
+  as.matrix()
+
+# dim(count_mat)
+# head(rownames(count_mat))
+# head(colnames(count_mat))
+count_mat_standard_species 
+
+# Step 3：构建 tse_standard_species
+tse_standard_species <- TreeSummarizedExperiment(
+  assays = list(counts = count_mat_standard_species)
+)
+# tse_standard_species
+
+# Step 4：构建rowData
+rowData(tse_standard_species)$Species <- rownames(tse_standard_species)
+# tse_standard_species
+
+# Step 5：绑定 metadata
+metadata <- readxl::read_xlsx(
+  here::here("data", "metadata", "pc047-metadata.xlsx")
+) |>
+  column_to_rownames("sample_id")
+
+common_samples <- base::intersect(
+  colnames(tse_standard_species),
+  rownames(metadata)
+)
+
+tse_standard_species <- tse_standard_species[, common_samples]
+colData(tse_standard_species) <- DataFrame(metadata[common_samples, ])
+# tse_standard_species
+
+# Step 6.建立只有 ca (caecum) 的子集
+# 筛选逻辑：保留 sample_type 等于 "caecum" 的列
+tse_standard_species_ca <- tse_standard_species[, tse_standard_species$source_organ == "caecum"]
+# tse_standard_species_ca
+```
+
+## 2.数据探索与质量控制 (QC)
+### 第一遍清洗(数据探索)
+```{r}
+# 1. 自动计算质量控制指标 (Library Size)
+# 使用 scuttle 包计算每个样本的总 reads 数（文库大小）
+# 这会在 colData 中生成 'total' 列
+tse_standard_species_ca_1 <- tse_standard_species_ca
+tse_standard_species_ca_1 <- addPerCellQCMetrics(tse_standard_species_ca_1)
+
+# 可视化文库大小分布
+# 如果 sampling depth 差异过大（例如超过 40 倍），可能需要后续过滤
+p1 <- plotHistogram(tse_standard_species_ca_1, col.var = "total") +
+  labs(title = "Library Size Distribution", x = "Total Reads")
+p1
+
+# 保存图表到 data/01_alpha_beta_diversity_analysis 文件夹
+ggsave(
+  filename = here::here("data", params$name, "01_qc_library_size_cleaning1.png"),
+  plot = p1,
+  width = 8, height = 6, dpi = 300
+)
+
+tse_standard_species_ca_1
+
+# 2. 针对ca的prevalence分析与 清洗（prevalence ＞10%）
+# 🌸注意：后面如果没有特别说明，都主要使用ca筛选后的子集，也就是tse_standard_species_ca
+# 因为咱们的项目主要是分析这一样本的不同实验组，ic是另一个样本的数据补充。
+tse_standard_species_ca_1 <- addPrevalence(
+  tse_standard_species_ca_1,
+  assay.type = "counts",
+  detection = 0,
+  as.relative = TRUE
+)
+
+rowData(tse_standard_species_ca_1)$prevalence <- as.numeric(rowData(tse_standard_species_ca_1)$prevalence)
+summary(rowData(tse_standard_species_ca_1)$prevalence) # 查看最大值、中位数等
+# 最大值不超过1，最小也大过0，说明没问题
+
+p2 <- plotHistogram(tse_standard_species_ca_1, row.var = "prevalence") +
+  labs(title = "Feature Prevalence Distribution", x = "Prevalence (Fraction of Samples)")
+p2
+
+# 保存图表
+ggsave(
+  filename = here::here("data", params$name, "02_qc_prevalence_distribution_cleaning1.png"),
+  plot = p2,
+  width = 8, height = 6, dpi = 300
+)
+
+# 获取普遍性大于 10% 的物种名单
+prev_standard_species_ca_1 <- getPrevalent(tse_standard_species_ca_1, prevalence = 0.1)
+# length(prev_standard_species_ca_1) # 查看有多少物种达标 11215
+
+# 执行数据清洗：只保留在 >10% 样本中出现的物种
+# dim(tse_standard_species_ca_1)
+# 清洗前 12043
+
+tse_standard_species_ca_1 <- subsetByPrevalent(tse_standard_species_ca_1, prevalence = 0.1)
+# dim(tse_standard_species_ca_1)
+# 清洗后 11215
+
+# 3. 将数据转化为相对丰度 及 主导species分析
+tse_standard_species_ca_1 <- transformAssay(tse_standard_species_ca_1, method = "relabundance")
+
+# 找出丰度前十的species
+top_taxa_standard_species_ca_1 <- getTop(tse_standard_species_ca_1, top = 10, assay.type = "relabundance")
+top_taxa_standard_species_ca_1
+# Homo sapiens是人源species，Curtobacterium flaccumfaciens是鼠子饲料中的常见植物species。要去除
+#  [1] "Homo sapiens"                  "Curtobacterium flaccumfaciens" "Duncaniella sp. B8"
+#  [4] "Muribaculum gordoncarteri"     "Duncaniella dubosii"           "Paramuribaculum intestinale"
+#  [7] "Muribaculum intestinale"       "Acutalibacter muris"           "Mucispirillum schaedleri"
+# [10] "Bacteroides uniformis"
+# 因此，需要去除这两种异源性species。
+```
+### 第二遍清洗 去除异源性species
+```{r}
+tse_standard_species_ca_2 <- tse_standard_species_ca
+# ------------------------------------------------------------------------------
+# 1.显式去污
+# ------------------------------------------------------------------------------
+unwanted_taxa_standard_species_ca_2 <- c("Homo sapiens", "Curtobacterium flaccumfaciens")
+tse_standard_species_ca_2 <- tse_standard_species_ca_2[!rownames(tse_standard_species_ca_2) %in% unwanted_taxa_standard_species_ca_2, ]
+
+# tse_standard_species_ca_2
+
+# OMA中提到的去污方法：
+# • 基于流行率（Prevalence-based）的方法：不可行。 这种方法确实必须依赖阴性对照（Negative Controls）。既然你没有对照样本，就无法通过比对“空管”和“样本”来识别环境污染物。
+# • 基于频率（Frequency-based）的方法：取决于元数据。 如果你有每个样本的 DNA 浓度数据（例如 colData 中的 post_pcr_dna_ng），你依然可以使用 OMA 的 addContaminantQC()。
+
+# ？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？
+# 本数据里都没有，那就只能把明显不对且占大头的污染去除了，只能做到这一步吗？？？
+# ？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？
+
+
+# ------------------------------------------------------------------------------
+# 2.重新计算有效library size
+# ------------------------------------------------------------------------------
+tse_standard_species_ca_2 <- addPerCellQC(tse_standard_species_ca_2)
+# colnames(colData(tse_standard_species_ca_2))
+
+
+# 可视化文库大小分布
+p1_2 <- plotHistogram(tse_standard_species_ca_2, col.var = "total") +
+  labs(title = "Library Size Distribution", x = "Total Reads")
+p1_2
+
+# 保存图表
+ggsave(
+  filename = here::here("data", params$name, "03_qc_library_size_cleaning2.png"),
+  plot = p1_2,
+  width = 8, height = 6, dpi = 300
+)
+
+# tse_standard_species_ca_2
+
+
+# ------------------------------------------------------------------------------
+# 3. prevalence分析与 清洗（prevalence ＞10%）
+# ------------------------------------------------------------------------------
+tse_standard_species_ca_2 <- addPrevalence(
+  tse_standard_species_ca_2,
+  assay.type = "counts",
+  detection = 0,
+  as.relative = TRUE
+)
+
+rowData(tse_standard_species_ca_2)$prevalence <- as.numeric(rowData(tse_standard_species_ca_2)$prevalence)
+summary(rowData(tse_standard_species_ca_2)$prevalence) # 查看最大值、中位数等
+# 最大值不超过1，最小也大过0，说明没问题
+
+p2_2 <- plotHistogram(tse_standard_species_ca_2, row.var = "prevalence") +
+  labs(title = "Feature Prevalence Distribution", x = "Prevalence (Fraction of Samples)")
+p2_2
+
+# 保存图表
+ggsave(
+  filename = here::here("data", params$name, "04_qc_prevalence_distribution_cleaning2.png"),
+  plot = p2_2,
+  width = 8, height = 6, dpi = 300
+)
+
+# 获取普遍性大于 10% 的物种名单
+prev_standard_species_ca_2 <- getPrevalent(tse_standard_species_ca_2, prevalence = 0.1)
+length(prev_standard_species_ca_2) # 查看有多少物种达标 11213
+
+# 执行数据清洗：只保留在 >10% 样本中出现的物种
+dim(tse_standard_species_ca_2)
+# 清洗前 12041
+
+tse_standard_species_ca_2 <- subsetByPrevalent(tse_standard_species_ca_2, prevalence = 0.1)
+dim(tse_standard_species_ca_2) # 清洗后 11213
+
+
+# ------------------------------------------------------------------------------
+# 4. 将数据转化为相对丰度 及 主导species分析
+# ------------------------------------------------------------------------------
+tse_standard_species_ca_2 <- transformAssay(tse_standard_species_ca_2, method = "relabundance")
+# 找出丰度前十的species
+top_taxa_standard_species_ca_2 <- getTop(tse_standard_species_ca_2, top = 10, assay.type = "relabundance")
+# top_taxa_standard_species_ca
+#  [1] "Duncaniella sp. B8"          "Muribaculum gordoncarteri"   "Duncaniella dubosii"
+#  [4] "Paramuribaculum intestinale" "Muribaculum intestinale"     "Mucispirillum schaedleri"
+#  [7] "Acutalibacter muris"         "Blautia producta"            "Bacteroides uniformis"
+# [10] "Escherichia coli"
+
+
+# ------------------------------------------------------------------------------
+# 5. 群落组成图 及 丰度密度图
+# ------------------------------------------------------------------------------
+# 5.1 群落组成图
+# 为了防止污染，复制一个tse文件。
+tse_standard_species_ca_top10forplot_2 <- tse_standard_species_ca_2
+
+# 将前 10 名以外的物种重命名为 "Other"
+rowData(tse_standard_species_ca_top10forplot_2)$Species_Top10 <- ifelse(
+  rownames(tse_standard_species_ca_top10forplot_2) %in% top_taxa_standard_species_ca_2,
+  rownames(tse_standard_species_ca_top10forplot_2),
+  "Other"
+)
+
+# 以此聚合
+tse_standard_species_ca_top10forplot_2 <- agglomerateByVariable(tse_standard_species_ca_top10forplot_2, by = "rows", f = "Species_Top10")
+
+# 绘图
+P3_2 <- plotAbundance(
+  tse_standard_species_ca_top10forplot_2,
+  assay.type = "relabundance",
+  order.row.by = "abund",
+  order.col.by = "Other"
+) +
+  labs(title = "Top 10 Species Composition (Caecum)", subtitle = "Non-top taxa grouped as 'Other'") +
+  theme(axis.text.x = element_blank())
+P3_2
+
+# 保存图表
+ggsave(
+  filename = here::here("data", params$name, "05_composition_top10_species_cleaning2.png"),
+  plot = P3_2,
+  width = 12, height = 6, dpi = 300
+)
+
+# 图中发现有一个样品，其Escherichia coli显著高于任何一个样品。
+sample_id_cleaning_2 <- which.max(assay(tse_standard_species_ca_2, "relabundance")["Escherichia coli", ])
+sample_id_cleaning_2
+# 发现是ca08，也就是ApcMUT_Ctrl组中的一只老鼠。那么，认为是错误样本，应予以清除。
+```
+### 第三遍清洗 在第二遍清洗的基础上，去除ca08样本
+```{r}
+tse_standard_species_ca_3 <- tse_standard_species_ca_2
+tse_standard_species_ca_3 # 检查一下，这一步还有29个样本
+
+# ------------------------------------------------------------------------------
+# 1. 去除ca08样本
+# ------------------------------------------------------------------------------
+tse_standard_species_ca_3 <- tse_standard_species_ca_3[, colnames(tse_standard_species_ca) != "ca08"]
+tse_standard_species_ca_3 # 这里就有28个样本了，说明去除成功了。
+
+
+# ------------------------------------------------------------------------------
+# 2.重新计算有效library size
+# ------------------------------------------------------------------------------
+# tse_standard_species_ca_3 <- addPerCellQC(tse_standard_species_ca_3)
+# colnames(colData(tse_standard_species_ca_3))
+# 这一步发现，有重复的colnames： "sum"             "detected"        "total"
+# 因为再次测算的library size不能覆盖，是重新生成。
+# 这样的话，就应该先把旧的剔除掉，然后再算新的。
+colData(tse_standard_species_ca_3) <- colData(tse_standard_species_ca_3)[, 1:11]
+tse_standard_species_ca_3 <- addPerCellQC(tse_standard_species_ca_3)
+colnames(colData(tse_standard_species_ca_3))
+
+# 可视化文库大小分布
+p1_3 <- plotHistogram(tse_standard_species_ca_3, col.var = "total") +
+  labs(title = "Library Size Distribution", x = "Total Reads")
+p1_3
+
+# 保存图表
+ggsave(
+  filename = here::here("data", params$name, "06_qc_library_size_cleaning3.png"),
+  plot = p1_3,
+  width = 8, height = 6, dpi = 300
+)
+
+tse_standard_species_ca_3
+
+
+# ------------------------------------------------------------------------------
+# 3. prevalence分析与 清洗（prevalence ＞10%）
+# ------------------------------------------------------------------------------
+tse_standard_species_ca_3 <- addPrevalence(
+  tse_standard_species_ca_3,
+  assay.type = "counts",
+  detection = 0,
+  as.relative = TRUE
+)
+
+rowData(tse_standard_species_ca_3)$prevalence <- as.numeric(rowData(tse_standard_species_ca_3)$prevalence)
+summary(rowData(tse_standard_species_ca_3)$prevalence) # 查看最大值、中位数等
+# 最大值不超过1，最小也大过0，说明没问题
+
+p2_3 <- plotHistogram(tse_standard_species_ca_3, row.var = "prevalence") +
+  labs(title = "Feature Prevalence Distribution", x = "Prevalence (Fraction of Samples)")
+p2_3
+
+# 保存图表
+ggsave(
+  filename = here::here("data", params$name, "07_qc_prevalence_distribution_cleaning3.png"),
+  plot = p2_3,
+  width = 8, height = 6, dpi = 300
+)
+
+# 获取普遍性大于 10% 的物种名单
+prev_standard_species_ca_3 <- getPrevalent(tse_standard_species_ca_3, prevalence = 0.1)
+length(prev_standard_species_ca_3) # 查看有多少物种达标 11213
+
+# 执行数据清洗：只保留在 >10% 样本中出现的物种
+dim(tse_standard_species_ca_3)
+# 清洗前 11213，没有因去掉ca08发生变化，不需要进一步处理。
+
+# ------------------------------------------------------------------------------
+# 4. 将数据转化为相对丰度 及 主导species分析
+# ------------------------------------------------------------------------------
+tse_standard_species_ca_3 <- transformAssay(tse_standard_species_ca_3, method = "relabundance")
+# 找出丰度前十的species
+top_taxa_standard_species_ca_3 <- getTop(tse_standard_species_ca_3, top = 10, assay.type = "relabundance")
+# top_taxa_standard_species_ca_3
+#  [1] "Duncaniella sp. B8"          "Muribaculum gordoncarteri"   "Duncaniella dubosii"
+#  [4] "Paramuribaculum intestinale" "Muribaculum intestinale"     "Mucispirillum schaedleri"
+#  [7] "Acutalibacter muris"         "Blautia producta"            "Bacteroides uniformis"
+# [10] "Enterocloster bolteae"
+
+
+# ------------------------------------------------------------------------------
+# 5. 群落组成图 及 丰度密度图
+# ------------------------------------------------------------------------------
+# 5.1 群落组成图
+# 为了防止污染，复制一个tse文件。
+tse_standard_species_ca_top10forplot_3 <- tse_standard_species_ca_3
+
+# 将前 10 名以外的物种重命名为 "Other"
+rowData(tse_standard_species_ca_top10forplot_3)$Species_Top10 <- ifelse(
+  rownames(tse_standard_species_ca_top10forplot_3) %in% top_taxa_standard_species_ca_3,
+  rownames(tse_standard_species_ca_top10forplot_3),
+  "Other"
+)
+
+# 以此聚合
+tse_standard_species_ca_top10forplot_3 <- agglomerateByVariable(tse_standard_species_ca_top10forplot_3, by = "rows", f = "Species_Top10")
+
+# 绘图
+P3_3 <- plotAbundance(
+  tse_standard_species_ca_top10forplot_3,
+  assay.type   = "relabundance",
+  order.row.by = "abund",
+  order.col.by = "Other"
+) +
+  labs(title = "Top 10 Species Composition (Caecum)", subtitle = "Non-top taxa grouped as 'Other'") +
+  theme(axis.text.x = element_blank())
+P3_3
+
+# 保存图表
+ggsave(
+  filename = here::here("data", params$name, "08_composition_top10_species_final.png"),
+  plot = P3_3,
+  width = 12, height = 6, dpi = 300
+)
+
+# 5.2 丰度密度图
+# 观察前 5 个最丰富物种在两组中的密度分布
+p3_3_density <- plotAbundanceDensity(
+  tse_standard_species_ca_top10forplot_3,
+  layout      = "density",
+  assay.type  = "relabundance",
+  n           = 5, # 选取丰度最高的5个物种
+  colour_by   = "treatment_group", # 按处理组分色对比
+  point_alpha = 0.1
+) +
+  scale_x_log10() +
+  labs(title = "Abundance Density of Top 5 Species")
+p3_3_density
+
+# 保存图表
+ggsave(
+  filename = here::here("data", params$name, "09_abundance_density_top5_species.png"),
+  plot = p3_3_density,
+  width = 10, height = 8, dpi = 300
+)
+```
+
+### 第四遍清洗 过滤零方差特征 (Filtering zero-variance features)
+在去除掉异常species、异常样本后，对零方差特征进行筛除。
+OMA 提到，在准备做组间比较（如 HpWT vs HpKO）时，有些物种虽然通过了流行率筛选，但它们在所有样本中的丰度几乎是一样的。这些特征没有统计学意义，只会增加计算负担。
+```{r}
+# 在第三遍清洗的基础上开展
+tse_standard_species_ca_4 <- tse_standard_species_ca_3
+
+# ------------------------------------------------------------------------------
+# 1. 计算每个物种在所有样本中的标准差 (sd)，并存入 rowData
+# ------------------------------------------------------------------------------
+# 建议使用原始计数 (counts) 层进行方差判断
+rowData(tse_standard_species_ca_4)[["sd"]] <- MatrixGenerics::rowSds(assay(tse_standard_species_ca_4, "counts"))
+
+# 统计 有多少物种是零方差的？
+table(rowData(tse_standard_species_ca_4)$sd > 0) #  TRUE 11213，与之前的species数量相同，说明都大于0
+
+# 2. 执行过滤：设置一个小阈值（ > 0.001）来过滤掉变动极小的物种
+tse_standard_species_ca_4 <- tse_standard_species_ca_4[rowData(tse_standard_species_ca_4)$sd > 0.001, ]
+
+dim(tse_standard_species_ca_4) # 还是11213，说明已经可以了（其实prevalence已经帮助筛选了）
+```
+
+### 清洗后的数据整理 及 genus水平聚合
+```{r}
+# ------------------------------------------------------------------------------
+# 1.清洗后数据另保存为clean tse文件
+# ------------------------------------------------------------------------------
+tse_standard_species_ca_cleaned <- tse_standard_species_ca_4
+# tse_standard_ca_cleaned
+# colnames(colData(tse_standard_species_ca_3))
+
+
+# ------------------------------------------------------------------------------
+# 2.genus水平聚合
+# ------------------------------------------------------------------------------
+# taxonomyRanks(tse_standard_species_ca_cleaned) # 原始数据中没有genus列，只有species。
+
+# 2.1 在 rowData 中增加 Genus 列
+rowData(tse_standard_species_ca_cleaned)$Genus <- str_extract(rownames(tse_standard_species_ca_cleaned), "^[^ ]+")
+# taxonomyRanks(tse_standard_species_ca_cleaned) # [1] "Species" "Genus"
+# 但是这样不可以的。因为函数agglomerateByRank要求严格按照顺序，也就是genus要再species前面
+# 重新排序
+correct_order_cleaning_4 <- c("Genus", "Species")
+
+# 2.2 重新对 rowData 的列进行排序
+# 这一步确保了 Genus 在左，Species 在右
+rowData(tse_standard_species_ca_cleaned) <- rowData(tse_standard_species_ca_cleaned)[, correct_order_cleaning_4]
+# 再次验证分类层级
+taxonomyRanks(tse_standard_species_ca_cleaned) # "Genus"   "Species"
+
+# 聚合
+tse_standard_genus_ca_originfrom_standardspeciescacleaned <- agglomerateByRank(tse_standard_species_ca_cleaned, rank = "Genus")
+tse_standard_genus_ca_originfrom_standardspeciescacleaned
+
+
+```
+
+## 3.数据分析
+### 3.1 Standard Species & Genus α-diversity
+```{r}
+# 1.计算Shannon（信息熵）、Observed（观测到的物种数）
+tse_standard_species_ca_cleaned <- addAlpha(
+  tse_standard_species_ca_cleaned,
+  assay.type = "counts",
+  index = c("shannon", "observed"),
+  name = c("shannon_index", "observed_richness")
+)
+head(colData(tse_standard_species_ca_cleaned)) # 多了 shannon 和 observed 两列
+
+
+# ------------------------------------------------------------------------------
+# 2. 统计检验 (Species)
+# ------------------------------------------------------------------------------
+# 2.0.1 整体差异检测
+# 使用非参数检验，不假设数据符合正态分布
+standard_species_ca_kruskal_result_global <- kruskal.test(shannon_index ~ treatment_group, data = colData(tse_standard_species_ca_cleaned))
+print(paste("全局 Shannon 差异 P 值:", round(standard_species_ca_kruskal_result_global$p.value, 4)))
+# 全局 Shannon 差异 P 值: 0.0651
+# 整体没有显著性差异，预计组与组之间可能不容易有显著性差异。
+
+# 2.0.2 未感染情况下，基因突变对于菌群的影响
+tse_standard_species_ca_cleaned_baseline <- tse_standard_species_ca_cleaned[, tse_standard_species_ca_cleaned$treatment_group %in% c("ApcWT_HpKO", "ApcMUT_HpKO")]
+
+tse_standard_species_ca_cleaned_baseline$treatment_group <- factor(tse_standard_species_ca_cleaned_baseline$treatment_group)
+
+standard_species_ca_cleaned_wilcox_baseline <- wilcox.test(shannon_index ~ treatment_group, data = colData(tse_standard_species_ca_cleaned_baseline))
+print(paste("宿主基线差异 P 值:", round(standard_species_ca_cleaned_wilcox_baseline$p.value, 4)))
+# "宿主基线差异 P 值: 0.0635"
+# 无显著性差异，说明基因突变对菌群无影响。
+
+# 2.1 先把待测的两组筛选出来
+# 筛选出 Apc 突变背景下的 HpWT 和 HpKO 组
+tse_standard_species_ca_cleaned_corepair <- tse_standard_species_ca_cleaned[, tse_standard_species_ca_cleaned$treatment_group %in% c("ApcMUT_HpWT", "ApcMUT_HpKO")]
+
+# 移除掉 colData 中那些不再使用的因子水平（Level）
+tse_standard_species_ca_cleaned_corepair$treatment_group <- factor(tse_standard_species_ca_cleaned_corepair$treatment_group)
+
+# 2.2 统计检验 (Wilcoxon 秩和检验)
+# 微生物组数据通常不符合正态分布，OMA 强烈建议使用非参数检验
+standard_species_ca_wilcox_result_corepair <- wilcox.test(shannon_index ~ treatment_group, data = colData(tse_standard_species_ca_cleaned_corepair))
+print(paste("Shannon 指数差异 P 值:", round(standard_species_ca_wilcox_result_corepair$p.value, 4)))
+# "Shannon 指数差异 P 值: 0.7302"
+# 这两组之间没有差异。
+
+# 2.3 可视化
+standard_species_ca_wilcox_result_corepair_plot_alpha <- function(tse, y_var, title) {
+  plotColData(tse,
+    x            = "treatment_group", y = y_var,
+    colour_by    = "treatment_group",
+    show_boxplot = TRUE
+  ) + # 显示箱线图
+    stat_compare_means(
+      comparisons = list(c("ApcMUT_HpKO", "ApcMUT_HpWT")),
+      method = "wilcox.test", label = "p.format"
+    ) +
+    labs(title = title, x = "Group", y = "Index Value") +
+    theme_bw() +
+    theme(legend.position = "none")
+}
+
+p3_1_1 <- standard_species_ca_wilcox_result_corepair_plot_alpha(tse_standard_species_ca_cleaned_corepair, "shannon_index", "Shannon Diversity (Species Level)")
+p3_1_2 <- standard_species_ca_wilcox_result_corepair_plot_alpha(tse_standard_species_ca_cleaned_corepair, "observed_richness", "Observed Richness (Species Level)")
+
+# 拼图展示
+p3_1_combined <- p3_1_1 + p3_1_2 # 没有显著性差异
+p3_1_combined
+
+# 保存单独的图表
+ggsave(
+  filename = here::here("data", params$name, "10_alpha_shannon_diversity_species.png"),
+  plot = p3_1_1,
+  width = 6, height = 5, dpi = 300
+)
+
+ggsave(
+  filename = here::here("data", params$name, "11_alpha_observed_richness_species.png"),
+  plot = p3_1_2,
+  width = 6, height = 5, dpi = 300
+)
+
+# 保存组合图
+ggsave(
+  filename = here::here("data", params$name, "12_alpha_diversity_combined_species.png"),
+  plot = p3_1_combined,
+  width = 12, height = 5, dpi = 300
+)
+
+
+# ------------------------------------------------------------------------------
+# 3. Genus水平复核 统计检验 (ApcMUT_HpWT vs ApcMUT_HpKO)
+# ------------------------------------------------------------------------------
+tse_standard_genus_ca_originfrom_standardspeciescacleaned <- 
+  addAlpha(
+    tse_standard_genus_ca_originfrom_standardspeciescacleaned,
+    assay.type = "counts",
+    index      = c("shannon", "observed"),
+    name       = c("shannon_index", "observed_richness")
+    )
+
+# 筛选出 Apc 突变背景下的 HpWT 和 HpKO 组
+tse_standard_genus_ca_corepair <- 
+  tse_standard_genus_ca_originfrom_standardspeciescacleaned[,tse_standard_genus_ca_originfrom_standardspeciescacleaned$treatment_group %in% c("ApcMUT_HpWT", "ApcMUT_HpKO")]
+
+# 移除掉 colData 中那些不再使用的因子水平（Level）
+tse_standard_genus_ca_corepair$treatment_group <-
+  factor(tse_standard_genus_ca_corepair$treatment_group)
+
+standard_genus_ca_wilcox_result_corepair <- 
+  wilcox.test(shannon_index ~ treatment_group, data = colData(tse_standard_genus_ca_corepair))
+print(paste("Shannon 指数差异 P 值:", round(standard_genus_ca_wilcox_result_corepair$p.value, 4)))
+# "Shannon 指数差异 P 值: 1"
+# 更说明了二者确实没有差异。
+```
+α-diversity分析小结
+（1）统计结果：
+1）在 Species（种）水平上，致瘤组（ApcMUT_HpWT）与对照组（ApcMUT_HpKO）的 Shannon 指数（P=0.73）和物种丰富度（Observed Richness, P=0.29）均无显著差异。
+2）在 Genus（属）水平上，两组间的 Shannon 指数差异统计学上完全不显著（P=1），说明两组在中位数和秩分布上高度一致。
+（2）生物学解释：
+1）群落复杂度稳健性：目前的证据表明，CagA 蛋白的注入以及后续的致瘤过程，并没有引起盲肠菌群整体复杂度（物种数量）或分布均匀度的剧烈崩溃。
+2）排除“大灭绝”假说：这说明肿瘤的发生并不是通过简单地“杀灭益生菌”或“降低菌群多样性”这种宏观生态失衡模式驱动的。
+（3）科学价值：
+这一结果实际上为**Functional Footprint**假说提供了间接支持：
+既然多样性（Alpha）没有变化，那么问题的核心极有可能隐藏在具体的物种组成结构（Beta）或代谢功能产物的细微偏移中。
+
+### 3.2 Standard Species & Genus β-diversity
+```{r}
+# ------------------------------------------------------------------------------
+# 1.计算 Bray-Curtis 距离与 PCoA 排序图 (ApcMUT_HpWT vs ApcMUT_HpKO)(species)
+# ------------------------------------------------------------------------------
+tse_standard_species_ca_cleaned_corepair
+tse_standard_genus_ca_corepair
+
+# 1.1 转换为相对丰度（Bray-Curtis 通常基于比例数据）
+tse_standard_species_ca_cleaned_corepair <- transformAssay(tse_standard_species_ca_cleaned_corepair, assay.type = "counts", method = "relabundance")
+
+# 1.2 运行 PCoA (MDS) 并存储在 reducedDim 槽位中
+# 这里使用 addMDS 函数，它会自动计算距离矩阵并降维
+tse_standard_species_ca_cleaned_corepair <- addMDS(
+  tse_standard_species_ca_cleaned_corepair,
+  FUN = getDissimilarity,
+  method = "bray",
+  assay.type = "relabundance",
+  name = "PCoA_Bray"
+)
+
+# 提取特征值 (Eigenvalues)
+standard_species_ca_cleaned_corepair_eigenvalues_bray <- attr(reducedDim(tse_standard_species_ca_cleaned_corepair, "PCoA_Bray"), "eig")
+
+# 计算相对解释方差 (仅针对正特征值进行归一化)
+standard_species_ca_cleaned_corepair_relative_eigenvalues_bray <- standard_species_ca_cleaned_corepair_eigenvalues_bray / sum(standard_species_ca_cleaned_corepair_eigenvalues_bray[standard_species_ca_cleaned_corepair_eigenvalues_bray > 0])
+
+# 1.3 可视化：观察 HpWT 和 HpKO 组是否形成了不同的簇
+p3_2_1 <- plotReducedDim(
+  tse_standard_species_ca_cleaned_corepair,
+  "PCoA_Bray",
+  colour_by = "treatment_group"
+) +
+  theme_bw() +
+  labs(
+    title = "PCoA based on Bray-Curtis Dissimilarity",
+    x = paste0("PCoA 1 (", round(100 * standard_species_ca_cleaned_corepair_relative_eigenvalues_bray[1], 1), "%)"),
+    y = paste0("PCoA 2 (", round(100 * standard_species_ca_cleaned_corepair_relative_eigenvalues_bray[2], 1), "%)")
+  )
+p3_2_1
+
+# 保存图表
+ggsave(
+  filename = here::here("data", params$name, "13_beta_pcoa_bray_curtis_species.png"),
+  plot = p3_2_1,
+  width = 8, height = 6, dpi = 300
+)
+
+# 直观地看的话，好像确实不太一样。
+# 但是需要更具体的数字证据
+
+# 1.4 PERMANOVA检验
+# 测试两组的质心（Centroids）是否在多维空间中显著分离
+
+standard_species_ca_cleaned_corepair_permanova_result <- getPERMANOVA(
+  tse_standard_species_ca_cleaned_corepair,
+  assay.type = "relabundance",
+  formula = x ~ treatment_group
+)
+
+print(standard_species_ca_cleaned_corepair_permanova_result$permanova)
+# 得到P = 0.012，变异鼠的HpWT 和 HpKO 组之间，其β-diversity有显著性差异。
+# 🌸证明 CagA 蛋白确实显著重塑了盲肠菌群的整体结构
+
+# 保存PERMANOVA结果（Species水平）
+write.csv(
+  standard_species_ca_cleaned_corepair_permanova_result$permanova,
+  file = here::here("data", params$name, "16_permanova_bray_curtis_species.csv"),
+  row.names = TRUE
+)
+
+# 1.5 Aitchison 距离：先做 CLR 转换，再计算欧几里得距离
+tse_standard_species_ca_cleaned_corepair <- transformAssay(
+  tse_standard_species_ca_cleaned_corepair,
+  assay.type = "counts",
+  method = "clr",
+  pseudocount = TRUE
+)
+
+tse_standard_species_ca_cleaned_corepair <- addMDS(
+  tse_standard_species_ca_cleaned_corepair,
+  FUN = getDissimilarity,
+  method = "euclidean",
+  assay.type = "clr",
+  name = "Aitchison"
+)
+
+# 提取特征值 (Eigenvalues)
+e_ait <- attr(reducedDim(tse_standard_species_ca_cleaned_corepair, "Aitchison"), "eig")
+
+# 计算相对解释方差（仅取正特征值之和作为分母）
+rel_eig_ait <- e_ait / sum(e_ait[e_ait > 0])
+
+# 生成坐标轴标签字符串
+label_x_ait <- paste0("PC 1 (", round(100 * rel_eig_ait[[7]], 1), "%)")
+label_y_ait <- paste0("PC 2 (", round(100 * rel_eig_ait[[8]], 1), "%)")
+
+p3_2_2 <- plotReducedDim(
+  tse_standard_species_ca_cleaned_corepair,
+  "Aitchison",
+  colour_by = "treatment_group"
+) +
+  theme_bw() +
+  labs(
+    title = "PCoA based on Aitchison Distance",
+    x = label_x_ait,
+    y = label_y_ait
+  )
+
+p3_2_2
+
+# 保存图表
+ggsave(
+  filename = here::here("data", params$name, "14_beta_pcoa_aitchison_species.png"),
+  plot = p3_2_2,
+  width = 8, height = 6, dpi = 300
+)
+
+# 这个解释程度仅有不到10%。
+
+
+# ------------------------------------------------------------------------------
+# 2.计算 Bray-Curtis 距离与 PCoA 排序图 (ApcMUT_HpWT vs ApcMUT_HpKO)(genus)
+# ------------------------------------------------------------------------------
+# 2.1 转换为相对丰度
+tse_standard_genus_ca_corepair <- transformAssay(
+  tse_standard_genus_ca_corepair,
+  assay.type = "counts",
+  method = "relabundance"
+)
+
+# 2.2 运行 PCoA (MDS) 并存储在 reducedDim 槽位中
+tse_standard_genus_ca_corepair <- addMDS(
+  tse_standard_genus_ca_corepair,
+  FUN = getDissimilarity,
+  method = "bray",
+  assay.type = "relabundance",
+  name = "PCoA_Bray"
+)
+
+# 提取特征值 (Eigenvalues)
+standard_genus_ca_corepair_eigenvalues_bray <- attr(
+  reducedDim(tse_standard_genus_ca_corepair, "PCoA_Bray"), "eig"
+)
+
+# 计算相对解释方差
+standard_genus_ca_corepair_relative_eigenvalues_bray <- standard_genus_ca_corepair_eigenvalues_bray / sum(standard_genus_ca_corepair_eigenvalues_bray[standard_genus_ca_corepair_eigenvalues_bray > 0])
+
+# 2.3 可视化：观察 HpWT 和 HpKO 组是否形成了不同的簇
+p3_2_3 <- plotReducedDim(
+  tse_standard_genus_ca_corepair,
+  "PCoA_Bray",
+  colour_by = "treatment_group"
+) +
+  theme_bw() +
+  labs(
+    title = "PCoA based on Bray-Curtis Dissimilarity genus",
+    x = paste0("PCoA 1 (", round(100 * standard_genus_ca_corepair_relative_eigenvalues_bray[1], 1), "%)"),
+    y = paste0("PCoA 2 (", round(100 * standard_genus_ca_corepair_relative_eigenvalues_bray[2], 1), "%)")
+  )
+p3_2_3 # # 直观地看的话，好像确实不太一样。
+
+# 保存图表
+ggsave(
+  filename = here::here("data", params$name, "15_beta_pcoa_bray_curtis_genus.png"),
+  plot = p3_2_3,
+  width = 8, height = 6, dpi = 300
+)
+
+
+# 2.4 PERMANOVA检验
+standard_genus_ca_corepair_permanova_result <- getPERMANOVA(
+  tse_standard_genus_ca_corepair,
+  assay.type = "relabundance",
+  formula = x ~ treatment_group
+)
+
+print(standard_genus_ca_corepair_permanova_result$permanova)
+# 得到P = 0.006，变异鼠的HpWT 和 HpKO 组之间，其β-diversity有显著性差异(genus层面)。
+# 🌸说明 CagA 对菌群的重塑效应不仅仅发生在个别物种上，而是在整个家族（属）层面都有体现
+
+# 保存PERMANOVA结果（Genus水平）
+write.csv(
+  standard_genus_ca_corepair_permanova_result$permanova,
+  file = here::here("data", params$name, "17_permanova_bray_curtis_genus.csv"),
+  row.names = TRUE
+)
+```
+β-diversity小结：
+CagA 对菌群的重塑效应不仅仅发生在个别物种上，而是在整个家族（属）层面都有体现
+
+### 3.3 差异丰度分析 (DAA)
+```{r}
+# tse_standard_species_ca_cleaned_corepair
+# tse_standard_genus_ca_corepair
+# ------------------------------------------------------------------------------
+# 1.使用 ANCOM-BC 进行差异分析 (ApcMUT_HpWT vs ApcMUT_HpKO)(species)
+# ------------------------------------------------------------------------------
+standard_species_ca_cleaned_corepair_ancom_result <- ancombc2(
+  data         = tse_standard_species_ca_cleaned_corepair,
+  assay.type   = "counts",
+  fix_formula  = "treatment_group",
+  p_adj_method = "fdr",
+  group        = "treatment_group",
+  struc_zero   = TRUE,
+  neg_lb       = TRUE,
+  global       = TRUE
+)
+
+# 提取前 10 名最显著的物种（按 Q 值排序）
+standard_species_ca_cleaned_corepair_top10_taxa <- standard_species_ca_cleaned_corepair_ancom_result$res |>
+    dplyr::select(
+        taxon, 
+        p_treatment_groupApcMUT_HpWT,  # 原始 P 值
+        q_treatment_groupApcMUT_HpWT,  # 矫正后的 Q 值 (FDR)
+        lfc_treatment_groupApcMUT_HpWT # 效应量：正值代表在 HpWT 组富集
+    ) |>
+    # 按 Q 值从小到大排序
+    dplyr::arrange(q_treatment_groupApcMUT_HpWT) |>
+    # 取前 10 名
+    head(10)
+
+# 打印结果 没有q值小于0.05的显著性差异
+standard_species_ca_cleaned_corepair_top10_taxa
+
+# 保存ANCOM-BC结果（Species水平）
+write.csv(
+  standard_species_ca_cleaned_corepair_top10_taxa,
+  file = here::here("data", params$name, "18_daa_ancombc_top10_species.csv"),
+  row.names = FALSE
+)
+
+# taxon                                       p         q         lfc 
+# 1	Microbacterium sp. nov. GSS16	      0.009393182	0.1942202	- 1.2183692
+# 2	Microbacterium sp. LKL04	          0.009980731	0.1942202	- 1.4737772
+# 3	Microbacterium trichothecenolyticum	0.006692324	0.1942202	- 1.2684134
+# 4	Microbacterium terricola	          0.006308883	0.1942202	- 1.6019392
+# 5	Microbacterium lushaniae	          0.006590145	0.1942202	- 1.3826046
+# 6	Microbacterium caowuchunii	        0.004509353	0.1942202	- 1.4505803
+# 7	Microbacterium hydrocarbonoxydans	  0.009543073	0.1942202	- 1.1074346
+# 8	Microbacterium sediminis	          0.001383167	0.1942202	- 1.4249033
+# 9	Pseudarthrobacter sp. H2	          0.008932442	0.1942202	  0.4777780
+# 10	Kocuria turfanensis              	0.009926458	0.1942202	  0.6983797
+
+
+# ------------------------------------------------------------------------------
+# 2.使用 ANCOM-BC 进行差异分析 (ApcMUT_HpWT vs ApcMUT_HpKO)(genus)
+# ------------------------------------------------------------------------------
+standard_genus_ca_corepair_ancom_result <- ancombc2(
+  data         = tse_standard_genus_ca_corepair,
+  assay.type   = "counts",
+  fix_formula  = "treatment_group",
+  p_adj_method = "fdr",
+  group        = "treatment_group",
+  struc_zero   = TRUE,
+  neg_lb       = TRUE,
+  global       = TRUE
+)
+
+# 提取前 10 名最显著的属（按 Q 值排序）
+standard_genus_ca_corepair_top10_taxa <- standard_genus_ca_corepair_ancom_result$res |>
+    dplyr::select(
+        taxon, 
+        p_treatment_groupApcMUT_HpWT,  # 原始 P 值
+        q_treatment_groupApcMUT_HpWT,  # 矫正后的 Q 值 (FDR)
+        lfc_treatment_groupApcMUT_HpWT # 效应量：正值代表在 HpWT 组富集
+    ) |>
+    # 按 Q 值从小到大排序
+    dplyr::arrange(q_treatment_groupApcMUT_HpWT) |>
+    # 取前 10 名
+    head(10)
+
+# 打印结果 没有q值小于0.05的显著性差异
+standard_genus_ca_corepair_top10_taxa
+
+# 保存ANCOM-BC结果（Genus水平）
+write.csv(
+  standard_genus_ca_corepair_top10_taxa,
+  file = here::here("data", params$name, "19_daa_ancombc_top10_genus.csv"),
+  row.names = FALSE
+)
+
+# taxon                                       p         q         lfc 
+# 1	[Clostridium]	                       0.018552066	0.3515041	 0.3697430
+# 2	[Ruminococcus]	                     0.009940363	0.3515041	 0.4598610
+# 3	Acetobacterium	                     0.014977858	0.3515041	 0.3423187
+# 4	Aciduricibacillus	                   0.023893769	0.3515041	 0.3894304
+# 5	Adhaeribacter	                       0.024413226	0.3515041	-0.4432572
+# 6	Aedoeadaptatus	                     0.008603206	0.3515041	 0.3998087
+# 7	Aegicerativicinus	                   0.016417508	0.3515041	-0.5180032
+# 8	Agathobaculum	                       0.007932780	0.3515041	 0.5551428
+# 9	Akkermansia	                         0.012690889	0.3515041	 0.4387427
+# 10	Aliisedimentitalea	               0.010885183	0.3515041	 0.7669521
+```
+
+ANCOM-BC结果分析：
+（1）整体结果：
+从统计学严谨性来看，无论是物种水平（q≈0.19）还是属水平（q≈0.35），均未达到传统的显著性差异阈值（q<0.05）。说明CagA 诱导的菌群改变在丰度层面可能不剧烈，而是细微的偏移。
+（2）物种层面（species）
+前 8 名全是 Microbacterium（微杆菌属），且LFC 均为负值（约 -1.1 到 -1.6）。说明在 HpWT（致瘤组）中，这些细菌相对于 HpKO 组是减少的。
+暗示了致病性 CagA 感染后，肠道环境（可能是由于持续的 T 细胞激活或炎症）对 Microbacterium 产生了某种程度的抑制作用。
+它们虽然不是直接推动肿瘤的“坏菌”，但可以作为环境恶化的表现菌种。
+（3）属层面（genus）
+属水平的 q 值更高（统计效能更低）。
+    ◦ Akkermansia (LFC 0.43)：这种菌通常与粘膜层相互作用，虽然有时被视为益生菌，但在特定肿瘤背景下其代谢产物与免疫系统有复杂互动。
+    ◦ [Ruminococcus] (LFC 0.45) 和 Agathobaculum (LFC 0.55)：这些属涉及复杂的碳水化合物代谢。在你的“功能脚印”假说中，这些菌可能通过产生特定的代谢物（如短链脂肪酸或其他非肽分子）来持续激活 CagA 特异性 T 细胞。
+    ◦ Aliisedimentitalea (LFC 0.76)：该属表现出最强的富集趋势，建议重点关注。
+    
+（4）为什么物种层面（species）中Microbacterium（微杆菌属）出现这么多，但是在属层面没有出现？属水平的分析（Agglomeration）将多个微弱的物种信号合并。例如，可能有很多种不同的 Ruminococcus 都在小幅增加，单独看都不显著，但聚合成“属”时，信号就被放大了。
+
+下一步再使用ALDE进行进一步测定。
+```{r}
+# ------------------------------------------------------------------------------
+# 3.使用 ALDEx2 进行验证（交叉验证） (ApcMUT_HpWT vs ApcMUT_HpKO)(species)
+# ------------------------------------------------------------------------------
+# 3.0 数据类型整理
+# 提取计数矩阵并确保它是纯粹的数值矩阵 (Matrix)
+standard_species_ca_cleaned_corepair_pure_counts <- as.matrix(assay(tse_standard_species_ca_cleaned_corepair, "counts"))
+mode(standard_species_ca_cleaned_corepair_pure_counts) <- "numeric"
+
+# 提取分组变量并务必转为字符向量 (Character)，这是防止 'round' 报错的关键 [对话历史]
+standard_species_ca_cleaned_corepair_group_vector <- as.character(tse_standard_species_ca_cleaned_corepair$treatment_group)
+
+# 3.1 生成蒙特卡洛抽样并进行 CLR 转换
+standard_species_ca_cleaned_corepair_x_aldex <- ALDEx2::aldex.clr(
+    reads       = standard_species_ca_cleaned_corepair_pure_counts, 
+    conds       = standard_species_ca_cleaned_corepair_group_vector, 
+    mc.samples  = 128,          # 128 次抽样可提供稳健的估计 
+    verbose     = FALSE
+)
+
+# 3.2 运行 Wilcoxon 检验和效应值计算
+standard_species_ca_cleaned_corepair_x_tt <- aldex.ttest(standard_species_ca_cleaned_corepair_x_aldex, paired.test = FALSE)
+
+standard_species_ca_cleaned_corepair_x_effect <- aldex.effect(standard_species_ca_cleaned_corepair_x_aldex, CI = TRUE)
+
+# 3.3 合并结果并筛选差异显著且效应明显的菌 (FDR < 0.05)
+standard_species_ca_cleaned_corepair_aldex_out <- data.frame(standard_species_ca_cleaned_corepair_x_tt, standard_species_ca_cleaned_corepair_x_effect)
+
+standard_species_ca_cleaned_corepair_significant_aldex <- standard_species_ca_cleaned_corepair_aldex_out |> 
+    dplyr::filter(wi.eBH < 0.05) |> 
+    arrange(desc(diff.btw))
+
+standard_species_ca_cleaned_corepair_display_table_3_3_1 <- standard_species_ca_cleaned_corepair_significant_aldex |>
+    tibble::rownames_to_column(var = "taxon") |>
+    dplyr::select(taxon, wi.eBH, effect) |>
+    dplyr::arrange(desc(effect))
+
+standard_species_ca_cleaned_corepair_display_table_3_3_1
+
+# 保存ALDEx2结果（Species水平，显著差异）
+write.csv(
+  standard_species_ca_cleaned_corepair_display_table_3_3_1,
+  file = here::here("data", params$name, "20_daa_aldex2_significant_species.csv"),
+  row.names = FALSE
+)
+
+#      taxon              wi.eBH       effect
+# Variovorax sp. EBFNA2	    0	         -1.856819		
+# Cnuibacter sp. UC19_7	    0	         -1.893983		
+# Agromyces aureus	        0	         -1.972783	
+
+
+# ------------------------------------------------------------------------------
+# 4.使用 ALDEx2 进行验证（交叉验证） (ApcMUT_HpWT vs ApcMUT_HpKO)(genus)
+# ------------------------------------------------------------------------------
+# 提取计数矩阵并确保它是纯粹的数值矩阵 (Matrix)
+standard_genus_ca_corepair_pure_counts <- as.matrix(assay(tse_standard_genus_ca_corepair, "counts"))
+mode(standard_genus_ca_corepair_pure_counts) <- "numeric"
+
+# 提取分组变量并务必转为字符向量 (Character)，这是防止 'round' 报错的关键 [对话历史]
+standard_genus_ca_corepair_group_vector <- as.character(tse_standard_genus_ca_corepair$treatment_group)
+
+# 4.1 生成蒙特卡洛抽样并进行 CLR 转换
+standard_genus_ca_corepair_x_aldex <- ALDEx2::aldex.clr(
+    reads       = standard_genus_ca_corepair_pure_counts, 
+    conds       = standard_genus_ca_corepair_group_vector, 
+    mc.samples  = 128,          
+    verbose     = FALSE
+)
+
+# 4.2 运行 Wilcoxon 检验和效应值计算
+standard_genus_ca_corepair_x_tt <- aldex.ttest(standard_genus_ca_corepair_x_aldex, paired.test = FALSE)
+standard_genus_ca_corepair_x_effect <- aldex.effect(standard_genus_ca_corepair_x_aldex, CI = TRUE)
+
+# 4.3 合并结果并筛选差异显著且效应明显的菌 (FDR < 0.05)
+standard_genus_ca_corepair_aldex_out <- data.frame(
+  standard_genus_ca_corepair_x_tt, 
+  standard_genus_ca_corepair_x_effect
+  )
+
+# standard_genus_ca_corepair_significant_aldex <- standard_genus_ca_corepair_aldex_out |> 
+#     dplyr::filter(wi.eBH < 0.05) |> 
+#     arrange(desc(diff.btw))
+# 
+# 
+# standard_genus_ca_corepair_display_table_3_3_2 <- standard_genus_ca_corepair_significant_aldex |>
+#     tibble::rownames_to_column(var = "taxon") |>
+#     dplyr::select(taxon, wi.eBH, effect) |>
+#     dplyr::arrange(desc(effect))
+# 
+# standard_genus_ca_corepair_display_table_3_3_2
+# # 结果：没有筛选出任何属，下面单看一下相对宽松的筛选结果：
+
+# 虽然统计还没达到显著，但组间差异趋势非常明显 的菌
+standard_genus_ca_corepair_trending_aldex <- standard_genus_ca_corepair_aldex_out |> 
+    dplyr::filter(abs(effect) > 1) |>  # effect大于1的有很多，
+    dplyr::filter(wi.eBH < 0.5) |>     # 但是,P小于0.05的没有，甚至小于0.1的都没有。
+    dplyr::arrange(desc(abs(effect))) # 按差异强度排序
+
+# 3. 准备展示表格
+standard_genus_ca_corepair_display_table_3_3_2 <- standard_genus_ca_corepair_trending_aldex |>
+    tibble::rownames_to_column(var = "taxon") |>
+    # 增加 diff.btw（组间中位差异）辅助判断方向
+    dplyr::select(taxon, wi.eBH, effect, diff.btw) |>
+    dplyr::arrange(desc(effect)) # 按富集程度排序，正数代表在 HpWT 组更高
+
+# 打印结果查看
+standard_genus_ca_corepair_display_table_3_3_2
+
+# 保存ALDEx2结果（Genus水平，趋势性差异）
+write.csv(
+  standard_genus_ca_corepair_display_table_3_3_2,
+  file = here::here("data", params$name, "21_daa_aldex2_trending_genus.csv"),
+  row.names = FALSE
+)
+
+# 条件已经非常宽松，但是还是只有一个属。
+#      taxon              wi.eBH       effect
+#    Wenyingzhuangia     0.4503173    -1.313812
+```
+ALDEx2结果小结：
+（1）物种水平（Species）：
+ariovorax sp. EBFNA2、Cnuibacter sp. UC19_7 和 Agromyces aureus 这三个物种不仅 wi.eBH 为 0（统计学极度显著），且 effect（效应量）均接近。说明：
+在 ALDEx2 中，|effect| > 1 被认为是具有强生物学意义的差异。这三个物种在 HpWT 组（致瘤组）中几乎是彻底消失或被剧烈抑制的，可能是 CagA 诱导肠道微环境改变所致。
+（2）属水平（Genus）：
+enyingzhuangia 虽然 effect 达到 -1.31（具有生物学意义），但 wi.eBH 仅为 0.45。这说明在属水平上，由于多个物种的丰度叠加，组内变异（Variance）增大，掩盖了统计显著性。
+
+
+DAA 结果综述：
+综合 ANCOM-BC 和 ALDEx2 的交叉验证结果，我们可以得出：
+(1)两套算法共同证实了HpWT（携带 CagA 组）经历了显著的细菌丢失：
+• ANCOM-BC 发现物种水平 Top 8 全是 Microbacterium（微杆菌属），且 LFC 均在 -1.2 到 -1.6 之间 。
+• ALDEx2 发现了 Variovorax 和 Agromyces 等物种的极强下调信号。
+这说明 CagA 驱动的致瘤过程伴随着这些“正常/背景菌群”的显著流失，这可能是寻找“functional footprint”的关键背景信息。
+(2)同时，也发现了正向富集的物种
+在 ANCOM-BC 的物种水平结果中，我们发现了两个宝贵的 正向差异信号（LFC > 0）：
+• Kocuria turfanensis (LFC = 0.70) 和 Pseudarthrobacter sp. H2 (LFC = 0.48) [对话历史]。
+虽然它们的 q 值（0.19）尚未达到严格显著，但在致瘤组中有富集的趋势。这些在致瘤环境下逆势增长的细菌，可能直接分泌激活 CD8+ T 细胞的非肽类分子。
+(3)属水平的趋势转移
+ANCOM-BC 在属水平上发现 [Clostridium] (LFC=0.37) 和 [Ruminococcus] (LFC=0.46) 有富集趋势。
+
+⚠️⚠️⚠️
+虽然两种找到的 Top 菌名不相同，但它们的方向是一致的——大部分差异菌在 HpWT 中都是下调的。
+这证明了 CagA 诱导的肠道环境对原位菌群具有极强的抑制作用？？？❗
+
+
+
+# Part 2 Virus Species & Genus
+## 1.导入数据并构建 TreeSE
+```{r}
+# Step 1：定义导入文件函数
+read_bracken_virus_species <- function(path) {
+  files <- list.files(path, pattern = "_S\\.tsv$", full.names = TRUE)
+
+  abundance_list <- lapply(files, function(f) {
+    df <- readr::read_tsv(f, show_col_types = FALSE)
+
+    sample_id <- basename(f) |> stringr::str_extract("^[^_]+")
+
+    tibble(
+      feature = df$name,
+      abundance = df$new_est_reads,
+      sample = sample_id
+    )
+  })
+
+  bind_rows(abundance_list)
+}
+
+# Step 2：构建count matrix
+bracken_long_virus_species <- read_bracken_virus_species(
+  here::here(
+    "data",
+    "00-raw",
+    "d01_alpha_beta_diversity_analysis",
+    "bracken_virus"
+  )
+)
+
+count_mat_virus_species <- bracken_long_virus_species |>
+  pivot_wider(
+    names_from  = sample,
+    values_from = abundance,
+    values_fill = 0
+  ) |>
+  column_to_rownames("feature") |>
+  as.matrix()
+
+dim(count_mat_virus_species)
+head(rownames(count_mat_virus_species))
+head(colnames(count_mat_virus_species))
+
+# Step 3：构建 tse_virus_species
+tse_virus_species <- TreeSummarizedExperiment(
+  assays = list(counts = count_mat_virus_species)
+)
+# tse_virus_species
+
+# Step 4：构建rowData
+rowData(tse_virus_species)$Species <- rownames(tse_virus_species)
+# tse_virus_species
+
+# Step 5：绑定 metadata
+metadata <- readxl::read_xlsx(
+  here::here("data", "metadata", "pc047-metadata.xlsx")
+) |>
+  column_to_rownames("sample_id")
+
+common_samples <- base::intersect(
+  colnames(tse_virus_species),
+  rownames(metadata)
+)
+
+tse_virus_species <- tse_virus_species[, common_samples]
+colData(tse_virus_species) <- DataFrame(metadata[common_samples, ])
+# tse_virus_species
+
+# Step 6.建立只有 ca (caecum) 的子集
+# 筛选逻辑：保留 sample_type 等于 "caecum" 的列
+tse_virus_species_ca <- tse_virus_species[, tse_virus_species$source_organ == "caecum"]
+# tse_virus_species_ca
+```
+
+## 2.数据探索与质量控制 (QC)
+### 第一遍清洗(数据探索)
+```{r}
+# ------------------------------------------------------------------------------
+# 0. 定义病毒黑名单并剔除
+# ------------------------------------------------------------------------------
+# 这些病毒物种在某些样本中丰度异常高，可能是污染或技术噪音
+# 定义 pc047 项目病毒黑名单 (基于 Top 1-100 名单)
+virusblacklist <- c(
+  # --- 1. 明确的跨物种/技术性污染 (必须剔除) ---
+  "Baboon endogenous virus", "Simian retrovirus 8",                # 灵长类
+  "Betatorquevirus homini3", "Endlipuvirus intestinihominis",    # 人源
+  "Percavirus equidgamma5", "Eponavirus epona",                  # 马相关
+  "RD114 retrovirus",                                            # 猫相关
+  
+  # --- 2. 环境背景噪声：巨型病毒 (建议剔除) ---
+  "Pandoravirus salinus", "Pandoravirus neocaledonia", 
+  "Pandoravirus macleodensis", "Pandoravirus inopinatum", 
+  "Pandoravirus dulcis", "Pandoravirus quercus", 
+  "Mimivirus bradfordmassiliense", "Mollivirus sibericum", 
+  "Fadolivirus algeromassiliense", "Faustvirus faust", 
+  "Tupanvirus salinum", "Tupanvirus altamarinense", 
+  "Alphaorpheovirus massiliense", "Megavirus chilense", 
+  "Moumouvirus australiense", "Moumouvirus goulettemassiliense", 
+  "Moumouvirus moumou", "Acanthamoeba castellanii medusavirus",
+  "Cotonvirus japonicum",
+  
+  # --- 3. 饮食/非预期宿主干扰 (建议剔除) ---
+  "Gorganvirus isfahan", "Bracoviriform facetosae",              # 昆虫
+  "Mushuvirus mushu", "Gammanudivirus cracrangonis",            # 昆虫
+  "Alphabaculovirus leseparatae", "Alphabaculovirus capomonae",  # 昆虫
+  "Betabaculovirus chofumiferanae",                             # 昆虫
+  "Chrysochromulina ericina virus",                             # 藻类
+  "Lymphocystivirus micropogonias1", "Cyvirus cyprinidallo3",    # 鱼类
+  "Mardivirus columbidalpha1",                                  # 鸽子
+  "Fraservirus testudinis",                                     # 乌龟
+  "Orthobunyavirus schmallenbergense", "Orthobunyavirus simbuense" # 反刍动物
+)
+
+tse_virus_species_ca_1 <- tse_virus_species_ca
+dim(tse_virus_species_ca_1) # 剔除前
+
+# 剔除黑名单中的物种
+tse_virus_species_ca_1 <- tse_virus_species_ca_1[!rownames(tse_virus_species_ca_1) %in% virusblacklist, ]
+dim(tse_virus_species_ca_1) # 剔除后
+
+# ------------------------------------------------------------------------------
+# 1. 自动计算质量控制指标 (Library Size)
+# ------------------------------------------------------------------------------
+# 使用 scuttle 包计算每个样本的总 reads 数（文库大小）
+# 这会在 colData 中生成 'total' 列
+tse_virus_species_ca_1 <- addPerCellQCMetrics(tse_virus_species_ca_1)
+
+# 可视化文库大小分布
+# 如果 sampling depth 差异过大（例如超过 40 倍），可能需要后续过滤
+p1_virus <- plotHistogram(tse_virus_species_ca_1, col.var = "total") +
+  labs(title = "Library Size Distribution", x = "Total Reads")
+p1_virus
+
+tse_virus_species_ca_1
+
+# 2. 针对ca的prevalence分析与 清洗（prevalence ＞10%）
+tse_virus_species_ca_1 <- addPrevalence(
+  tse_virus_species_ca_1,
+  assay.type = "counts",
+  detection = 0,
+  as.relative = TRUE
+)
+
+rowData(tse_virus_species_ca_1)$prevalence <- as.numeric(rowData(tse_virus_species_ca_1)$prevalence)
+summary(rowData(tse_virus_species_ca_1)$prevalence) # 查看最大值、中位数等
+# 最大值不超过1，最小也大过0，说明没问题
+
+p2_virus <- plotHistogram(tse_virus_species_ca_1, row.var = "prevalence") +
+  labs(title = "Feature Prevalence Distribution", x = "Prevalence (Fraction of Samples)")
+p2_virus
+
+# 获取普遍性大于 10% 的物种名单
+prev_virus_species_ca_1 <- getPrevalent(tse_virus_species_ca_1, prevalence = 0.1)
+length(prev_virus_species_ca_1) # 查看有多少物种达标 243
+
+# 执行数据清洗：只保留在 >10% 样本中出现的物种
+dim(tse_virus_species_ca_1)
+# 清洗前 513
+
+tse_virus_species_ca_1 <- subsetByPrevalent(tse_virus_species_ca_1, prevalence = 0.1)
+dim(tse_virus_species_ca_1)
+# 清洗后 243
+
+# 3. 将数据转化为相对丰度 及 主导species分析
+tse_virus_species_ca_1 <- transformAssay(tse_virus_species_ca_1, method = "relabundance")
+
+# 找出丰度前十的species
+top_taxa_virus_species_ca_1 <- getTop(tse_virus_species_ca_1, top = 100, assay.type = "relabundance")
+top_taxa_virus_species_ca_1
+# 运行后查看top taxa列表，确认黑名单物种已被剔除
+# 病毒数据以鼠源逆转录病毒为主
+# 已通过virus_blacklist剔除了丰度异常的物种
+```
+
+### 第二遍清洗 群落组成图检查异常样本
+```{r}
+tse_virus_species_ca_2 <- tse_virus_species_ca_1
+
+# ------------------------------------------------------------------------------
+# 1. 群落组成图 检查是否有异常样本
+# ------------------------------------------------------------------------------
+# 找出丰度前十的species
+top_taxa_virus_species_ca_2 <- getTop(tse_virus_species_ca_2, top = 10, assay.type = "relabundance")
+top_taxa_virus_species_ca_2
+
+# 为了防止污染，复制一个tse文件用于绑图
+tse_virus_species_ca_top10forplot_2 <- tse_virus_species_ca_2
+
+# 将前 10 名以外的物种重命名为 "Other"
+rowData(tse_virus_species_ca_top10forplot_2)$Species_Top10 <- ifelse(
+  rownames(tse_virus_species_ca_top10forplot_2) %in% top_taxa_virus_species_ca_2,
+  rownames(tse_virus_species_ca_top10forplot_2),
+  "Other"
+)
+
+# 以此聚合
+tse_virus_species_ca_top10forplot_2 <- agglomerateByVariable(
+  tse_virus_species_ca_top10forplot_2,
+  by = "rows",
+  f = "Species_Top10"
+)
+
+# 绑图
+p1_virus_composition <- plotAbundance(
+  tse_virus_species_ca_top10forplot_2,
+  assay.type = "relabundance",
+  order.row.by = "abund",
+  order.col.by = "Other"
+) +
+  labs(
+    title = "Top 10 Virus Species Composition (Caecum)",
+    subtitle = "Non-top taxa grouped as 'Other'"
+  ) +
+  theme(axis.text.x = element_blank())
+p1_virus_composition
+
+# 保存图表
+ggsave(
+  filename = here::here("data", params$name, "22_composition_top10_virus_species.png"),
+  plot = p1_virus_composition,
+  width = 12, height = 6, dpi = 300
+)
+
+# 检查是否有像standard中ca08那样的异常样本
+# 有一个样本
+sample_id_cleaning_2_2 <- which.max(assay(tse_virus_species_ca_2, "relabundance")["Andhravirus andhra", ])
+sample_id_cleaning_2
+# 果然还是ca08，剔除掉。
+# 观察图表，如果没有明显异常，则继续下一步
+# 作为训练项目，此处不去除任何样本
+
+tse_virus_species_ca_2 <- tse_virus_species_ca_2[, colnames(tse_virus_species_ca) != "ca08"]
+tse_standard_species_ca_3 # 这里就有28个样本了，说明去除成功了。
+```
+
+### 第三遍清洗 过滤零方差特征
+```{r}
+tse_virus_species_ca_3 <- tse_virus_species_ca_2
+
+# ------------------------------------------------------------------------------
+# 1. 计算每个物种在所有样本中的标准差 (sd)，并存入 rowData
+# ------------------------------------------------------------------------------
+rowData(tse_virus_species_ca_3)[["sd"]] <- MatrixGenerics::rowSds(assay(tse_virus_species_ca_3, "counts"))
+
+# 统计有多少物种不是零方差的？
+table(rowData(tse_virus_species_ca_3)$sd > 0)
+
+# 2. 执行过滤：设置一个小阈值（ > 0.001）来过滤掉变动极小的物种
+tse_virus_species_ca_3 <- tse_virus_species_ca_3[rowData(tse_virus_species_ca_3)$sd > 0.001, ]
+
+dim(tse_virus_species_ca_3)
+```
+
+### 清洗后的数据整理 及 genus水平聚合
+```{r}
+# ------------------------------------------------------------------------------
+# 1.清洗后数据另保存为clean tse文件
+# ------------------------------------------------------------------------------
+tse_virus_species_ca_cleaned <- tse_virus_species_ca_3
+tse_virus_species_ca_cleaned
+
+# ------------------------------------------------------------------------------
+# 2.genus水平聚合
+# ------------------------------------------------------------------------------
+# 2.1 在 rowData 中增加 Genus 列（从病毒物种名中提取属名）
+rowData(tse_virus_species_ca_cleaned)$Genus <- str_extract(rownames(tse_virus_species_ca_cleaned), "^[^ ]+")
+
+# 2.2 重新排序，确保 Genus 在 Species 前面
+correct_order_virus <- c("Genus", "Species")
+rowData(tse_virus_species_ca_cleaned) <- rowData(tse_virus_species_ca_cleaned)[, correct_order_virus]
+
+# 验证分类层级
+taxonomyRanks(tse_virus_species_ca_cleaned)
+
+# 2.3 聚合到genus水平
+tse_virus_genus_ca_originfrom_virusspeciescacleaned <- agglomerateByRank(tse_virus_species_ca_cleaned, rank = "Genus")
+tse_virus_genus_ca_originfrom_virusspeciescacleaned
+```
+
+## 3.数据分析
+### 3.1 Virus Species & Genus α-diversity
+```{r}
+# ------------------------------------------------------------------------------
+# 1.计算Shannon（信息熵）、Observed（观测到的物种数）
+# ------------------------------------------------------------------------------
+tse_virus_species_ca_cleaned <- addAlpha(
+  tse_virus_species_ca_cleaned,
+  assay.type = "counts",
+  index = c("shannon", "observed"),
+  name = c("shannon_index", "observed_richness")
+)
+head(colData(tse_virus_species_ca_cleaned))
+
+# ------------------------------------------------------------------------------
+# 2. 统计检验 (Species)
+# ------------------------------------------------------------------------------
+# 2.0.1 整体差异检测
+virus_species_ca_kruskal_result_global <- kruskal.test(shannon_index ~ treatment_group, data = colData(tse_virus_species_ca_cleaned))
+print(paste("全局 Shannon 差异 P 值:", round(virus_species_ca_kruskal_result_global$p.value, 4)))
+# 全局 Shannon 差异 P 值: 0.0184
+# 🌟整体存在有显著性差异
+
+# 2.1 筛选出核心比较组 (ApcMUT_HpWT vs ApcMUT_HpKO)
+tse_virus_species_ca_cleaned_corepair <- tse_virus_species_ca_cleaned[, tse_virus_species_ca_cleaned$treatment_group %in% c("ApcMUT_HpWT", "ApcMUT_HpKO")]
+
+# 移除掉 colData 中那些不再使用的因子水平（Level）
+tse_virus_species_ca_cleaned_corepair$treatment_group <- factor(tse_virus_species_ca_cleaned_corepair$treatment_group)
+
+# 2.2 统计检验 (Wilcoxon 秩和检验)
+virus_species_ca_wilcox_result_corepair <- wilcox.test(shannon_index ~ treatment_group, data = colData(tse_virus_species_ca_cleaned_corepair))
+print(paste("Shannon 指数差异 P 值:", round(virus_species_ca_wilcox_result_corepair$p.value, 4)))
+# Shannon 指数差异 P 值: 0.9048
+# 这里反倒是没有显著性差异了。为什么，整体有差异的话，局部难道不应该更有差异吗？
+
+# 检查：未感染时，Apc基因型对病毒组的影响
+tse_virus_baseline <- tse_virus_species_ca_cleaned[, tse_virus_species_ca_cleaned$treatment_group %in% c("ApcWT_HpKO", "ApcMUT_HpKO")]
+tse_virus_baseline$treatment_group <- factor(tse_virus_baseline$treatment_group)
+wilcox.test(shannon_index ~ treatment_group, data = colData(tse_virus_baseline))
+# p-value = 0.06349
+
+# 检查：野生型Apc背景下，感染的影响
+tse_virus_wt <- tse_virus_species_ca_cleaned[, tse_virus_species_ca_cleaned$treatment_group %in% c("ApcWT_HpKO", "ApcWT_HpWT")]
+tse_virus_wt$treatment_group <- factor(tse_virus_wt$treatment_group)
+wilcox.test(shannon_index ~ treatment_group, data = colData(tse_virus_wt))
+# p-value = 0.2222
+
+
+# 2.3 可视化
+virus_species_ca_wilcox_result_corepair_plot_alpha <- function(tse, y_var, title) {
+  plotColData(tse,
+    x            = "treatment_group", y = y_var,
+    colour_by    = "treatment_group",
+    show_boxplot = TRUE
+  ) +
+    stat_compare_means(
+      comparisons = list(c("ApcMUT_HpKO", "ApcMUT_HpWT")),
+      method = "wilcox.test", label = "p.format"
+    ) +
+    labs(title = title, x = "Group", y = "Index Value") +
+    theme_bw() +
+    theme(legend.position = "none")
+}
+
+p3_1_virus_1 <- virus_species_ca_wilcox_result_corepair_plot_alpha(tse_virus_species_ca_cleaned_corepair, "shannon_index", "Shannon Diversity (Virus Species Level)")
+p3_1_virus_2 <- virus_species_ca_wilcox_result_corepair_plot_alpha(tse_virus_species_ca_cleaned_corepair, "observed_richness", "Observed Richness (Virus Species Level)")
+
+# 拼图展示
+p3_1_virus_combined <- p3_1_virus_1 + p3_1_virus_2
+p3_1_virus_combined
+
+# 保存单独的图表
+ggsave(
+  filename = here::here("data", params$name, "23_alpha_shannon_diversity_virus_species.png"),
+  plot = p3_1_virus_1,
+  width = 6, height = 5, dpi = 300
+)
+
+ggsave(
+  filename = here::here("data", params$name, "24_alpha_observed_richness_virus_species.png"),
+  plot = p3_1_virus_2,
+  width = 6, height = 5, dpi = 300
+)
+
+# 保存组合图
+ggsave(
+  filename = here::here("data", params$name, "25_alpha_diversity_combined_virus_species.png"),
+  plot = p3_1_virus_combined,
+  width = 12, height = 5, dpi = 300
+)
+
+# ------------------------------------------------------------------------------
+# 3. Genus水平复核 统计检验 (ApcMUT_HpWT vs ApcMUT_HpKO)
+# ------------------------------------------------------------------------------
+tse_virus_genus_ca_originfrom_virusspeciescacleaned <- addAlpha(
+  tse_virus_genus_ca_originfrom_virusspeciescacleaned,
+  assay.type = "counts",
+  index = c("shannon", "observed"),
+  name = c("shannon_index", "observed_richness")
+)
+
+# 筛选出核心比较组
+tse_virus_genus_ca_corepair <- tse_virus_genus_ca_originfrom_virusspeciescacleaned[, tse_virus_genus_ca_originfrom_virusspeciescacleaned$treatment_group %in% c("ApcMUT_HpWT", "ApcMUT_HpKO")]
+
+# 移除掉不再使用的因子水平
+tse_virus_genus_ca_corepair$treatment_group <- factor(tse_virus_genus_ca_corepair$treatment_group)
+
+virus_genus_ca_wilcox_result_corepair <- wilcox.test(shannon_index ~ treatment_group, data = colData(tse_virus_genus_ca_corepair))
+print(paste("Genus水平 Shannon 指数差异 P 值:", round(virus_genus_ca_wilcox_result_corepair$p.value, 4)))
+# "Genus水平 Shannon 指数差异 P 值: 0.9048"
+```
+α-diversity小结：
+结果与Standard细菌分析的模式一致：
+核心比较组（ApcMUT_HpWT vs ApcMUT_HpKO）的alpha多样性无差异
+说明CagA感染在Apc突变背景下没有显著改变病毒组的整体复杂度
+这支持了**"Functional Footprint"假说**：变化可能在组成结构（Beta
+多样性）或特定物种丰度上，而非整体多样性
+
+### 3.2 Virus Species & Genus β-diversity
+```{r}
+# ------------------------------------------------------------------------------
+# 1.计算 Bray-Curtis 距离与 PCoA 排序图 (ApcMUT_HpWT vs ApcMUT_HpKO)(species)
+# ------------------------------------------------------------------------------
+# 1.1 转换为相对丰度
+tse_virus_species_ca_cleaned_corepair <- transformAssay(tse_virus_species_ca_cleaned_corepair, assay.type = "counts", method = "relabundance")
+
+# 1.2 运行 PCoA (MDS)
+tse_virus_species_ca_cleaned_corepair <- addMDS(
+  tse_virus_species_ca_cleaned_corepair,
+  FUN = getDissimilarity,
+  method = "bray",
+  assay.type = "relabundance",
+  name = "PCoA_Bray"
+)
+
+# 提取特征值
+virus_species_ca_cleaned_corepair_eigenvalues_bray <- attr(reducedDim(tse_virus_species_ca_cleaned_corepair, "PCoA_Bray"), "eig")
+
+# 计算相对解释方差
+virus_species_ca_cleaned_corepair_relative_eigenvalues_bray <- virus_species_ca_cleaned_corepair_eigenvalues_bray / sum(virus_species_ca_cleaned_corepair_eigenvalues_bray[virus_species_ca_cleaned_corepair_eigenvalues_bray > 0])
+
+# 1.3 可视化
+p3_2_virus_1 <- plotReducedDim(
+  tse_virus_species_ca_cleaned_corepair,
+  "PCoA_Bray",
+  colour_by = "treatment_group"
+) +
+  theme_bw() +
+  labs(
+    title = "PCoA based on Bray-Curtis Dissimilarity (Virus Species)",
+    x = paste0("PCoA 1 (", round(100 * virus_species_ca_cleaned_corepair_relative_eigenvalues_bray[1], 1), "%)"),
+    y = paste0("PCoA 2 (", round(100 * virus_species_ca_cleaned_corepair_relative_eigenvalues_bray[2], 1), "%)")
+  )
+p3_2_virus_1
+
+# 保存图表
+ggsave(
+  filename = here::here("data", params$name, "26_beta_pcoa_bray_curtis_virus_species.png"),
+  plot = p3_2_virus_1,
+  width = 8, height = 6, dpi = 300
+)
+
+# 1.4 PERMANOVA检验
+virus_species_ca_cleaned_corepair_permanova_result <- getPERMANOVA(
+  tse_virus_species_ca_cleaned_corepair,
+  assay.type = "relabundance",
+  formula = x ~ treatment_group
+)
+
+print(virus_species_ca_cleaned_corepair_permanova_result$permanova)
+#                 Df SumOfSqs      R2      F Pr(>F)
+# treatment_group  1 0.004191 0.10605 0.8304  0.445
+# Residual         7 0.035323 0.89395              
+# Total            8 0.039514 1.00000              
+
+# 保存PERMANOVA结果
+write.csv(
+  virus_species_ca_cleaned_corepair_permanova_result$permanova,
+  file = here::here("data", params$name, "27_permanova_bray_curtis_virus_species.csv"),
+  row.names = TRUE
+)
+
+# ------------------------------------------------------------------------------
+# 2.计算 Bray-Curtis 距离与 PCoA 排序图 (ApcMUT_HpWT vs ApcMUT_HpKO)(genus)
+# ------------------------------------------------------------------------------
+# 2.1 转换为相对丰度
+tse_virus_genus_ca_corepair <- transformAssay(
+  tse_virus_genus_ca_corepair,
+  assay.type = "counts",
+  method = "relabundance"
+)
+
+# 2.2 运行 PCoA (MDS)
+tse_virus_genus_ca_corepair <- addMDS(
+  tse_virus_genus_ca_corepair,
+  FUN = getDissimilarity,
+  method = "bray",
+  assay.type = "relabundance",
+  name = "PCoA_Bray"
+)
+
+# 提取特征值
+virus_genus_ca_corepair_eigenvalues_bray <- attr(reducedDim(tse_virus_genus_ca_corepair, "PCoA_Bray"), "eig")
+
+# 计算相对解释方差
+virus_genus_ca_corepair_relative_eigenvalues_bray <- virus_genus_ca_corepair_eigenvalues_bray / sum(virus_genus_ca_corepair_eigenvalues_bray[virus_genus_ca_corepair_eigenvalues_bray > 0])
+
+# 2.3 可视化
+p3_2_virus_2 <- plotReducedDim(
+  tse_virus_genus_ca_corepair,
+  "PCoA_Bray",
+  colour_by = "treatment_group"
+) +
+  theme_bw() +
+  labs(
+    title = "PCoA based on Bray-Curtis Dissimilarity (Virus Genus)",
+    x = paste0("PCoA 1 (", round(100 * virus_genus_ca_corepair_relative_eigenvalues_bray[1], 1), "%)"),
+    y = paste0("PCoA 2 (", round(100 * virus_genus_ca_corepair_relative_eigenvalues_bray[2], 1), "%)")
+  )
+p3_2_virus_2
+
+# 保存图表
+ggsave(
+  filename = here::here("data", params$name, "28_beta_pcoa_bray_curtis_virus_genus.png"),
+  plot = p3_2_virus_2,
+  width = 8, height = 6, dpi = 300
+)
+
+# 2.4 PERMANOVA检验
+virus_genus_ca_corepair_permanova_result <- getPERMANOVA(
+  tse_virus_genus_ca_corepair,
+  assay.type = "relabundance",
+  formula = x ~ treatment_group
+)
+
+print(virus_genus_ca_corepair_permanova_result$permanova)
+#                 Df SumOfSqs      R2      F Pr(>F)
+# treatment_group  1 0.003692 0.09965 0.7747  0.506
+# Residual         7 0.033357 0.90035              
+# Total            8 0.037049 1.00000  
+
+# 保存PERMANOVA结果
+write.csv(
+  virus_genus_ca_corepair_permanova_result$permanova,
+  file = here::here("data", params$name, "29_permanova_bray_curtis_virus_genus.csv"),
+  row.names = TRUE
+)
+```
+β-diversity小结：
+Standard vs Virus 对比
+
+  | 数据类型        | Alpha多样性(corepair)  | Beta多样性 (corepair) |
+  |-----------------|------------------------|-----------------------|
+  | Standard (细菌) | P=0.73 (不显著)        | P=0.012 (显著)        |
+  | Virus (病毒)    | P=0.90 (不显著)        | P≈0.5 (不显著)        |
+CagA主要影响细菌群落，而非病毒组。
+如果病毒组（包括噬菌体）没有显著变化，说明：
+（1）CagA诱导的T细胞持续激活可能不是由噬菌体介导
+（2）Functional Footprint聚焦于细菌而非病毒。
+
+
+βdiversity无差异，可以不进行后续步骤（DAA分析）
+### 3.3 Virus 差异丰度分析 (DAA)
+```{r}
+# ------------------------------------------------------------------------------
+# 1.使用 ANCOM-BC 进行差异分析 (ApcMUT_HpWT vs ApcMUT_HpKO)(species)
+# ------------------------------------------------------------------------------
+virus_species_ca_cleaned_corepair_ancom_result <- ancombc2(
+  data         = tse_virus_species_ca_cleaned_corepair,
+  assay.type   = "counts",
+  fix_formula  = "treatment_group",
+  p_adj_method = "fdr",
+  group        = "treatment_group",
+  struc_zero   = TRUE,
+  neg_lb       = TRUE,
+  global       = TRUE
+)
+
+# 提取前 10 名最显著的物种
+virus_species_ca_cleaned_corepair_top10_taxa <- virus_species_ca_cleaned_corepair_ancom_result$res |>
+  dplyr::select(
+    taxon,
+    p_treatment_groupApcMUT_HpWT,
+    q_treatment_groupApcMUT_HpWT,
+    lfc_treatment_groupApcMUT_HpWT
+  ) |>
+  dplyr::arrange(q_treatment_groupApcMUT_HpWT) |>
+  head(10)
+
+virus_species_ca_cleaned_corepair_top10_taxa
+# 得到的q结果均大于0.5
+
+# 保存结果
+write.csv(
+  virus_species_ca_cleaned_corepair_top10_taxa,
+  file = here::here("data", params$name, "30_daa_ancombc_top10_virus_species.csv"),
+  row.names = FALSE
+)
+
+# ------------------------------------------------------------------------------
+# 2.使用 ANCOM-BC 进行差异分析 (ApcMUT_HpWT vs ApcMUT_HpKO)(genus)
+# ------------------------------------------------------------------------------
+virus_genus_ca_corepair_ancom_result <- ancombc2(
+  data         = tse_virus_genus_ca_corepair,
+  assay.type   = "counts",
+  fix_formula  = "treatment_group",
+  p_adj_method = "fdr",
+  group        = "treatment_group",
+  struc_zero   = TRUE,
+  neg_lb       = TRUE,
+  global       = TRUE
+)
+
+# 提取前 10 名最显著的属
+virus_genus_ca_corepair_top10_taxa <- virus_genus_ca_corepair_ancom_result$res |>
+  dplyr::select(
+    taxon,
+    p_treatment_groupApcMUT_HpWT,
+    q_treatment_groupApcMUT_HpWT,
+    lfc_treatment_groupApcMUT_HpWT
+  ) |>
+  dplyr::arrange(q_treatment_groupApcMUT_HpWT) |>
+  head(10)
+
+virus_genus_ca_corepair_top10_taxa
+# 得到的q结果均大于0.7
+# 保存结果
+write.csv(
+  virus_genus_ca_corepair_top10_taxa,
+  file = here::here("data", params$name, "31_daa_ancombc_top10_virus_genus.csv"),
+  row.names = FALSE
+)
+```
+
+```{r}
+# ------------------------------------------------------------------------------
+# 3.使用 ALDEx2 进行验证（交叉验证） (ApcMUT_HpWT vs ApcMUT_HpKO)(species)
+# ------------------------------------------------------------------------------
+# 3.0 数据类型整理
+virus_species_ca_cleaned_corepair_pure_counts <- as.matrix(assay(tse_virus_species_ca_cleaned_corepair, "counts"))
+mode(virus_species_ca_cleaned_corepair_pure_counts) <- "numeric"
+
+virus_species_ca_cleaned_corepair_group_vector <- as.character(tse_virus_species_ca_cleaned_corepair$treatment_group)
+
+# 3.1 生成蒙特卡洛抽样并进行 CLR 转换
+virus_species_ca_cleaned_corepair_x_aldex <- ALDEx2::aldex.clr(
+  reads      = virus_species_ca_cleaned_corepair_pure_counts,
+  conds      = virus_species_ca_cleaned_corepair_group_vector,
+  mc.samples = 128,
+  verbose    = FALSE
+)
+
+# 3.2 运行 Wilcoxon 检验和效应值计算
+virus_species_ca_cleaned_corepair_x_tt <- aldex.ttest(virus_species_ca_cleaned_corepair_x_aldex, paired.test = FALSE)
+virus_species_ca_cleaned_corepair_x_effect <- aldex.effect(virus_species_ca_cleaned_corepair_x_aldex, CI = TRUE)
+
+# 3.3 合并结果并筛选
+virus_species_ca_cleaned_corepair_aldex_out <- data.frame(virus_species_ca_cleaned_corepair_x_tt, virus_species_ca_cleaned_corepair_x_effect)
+
+# 筛选显著差异的物种 (FDR < 0.05)
+virus_species_ca_cleaned_corepair_significant_aldex <- virus_species_ca_cleaned_corepair_aldex_out |>
+  dplyr::filter(wi.eBH < 0.05) |>
+  arrange(desc(diff.btw))
+
+virus_species_ca_cleaned_corepair_display_table <- virus_species_ca_cleaned_corepair_significant_aldex |>
+  tibble::rownames_to_column(var = "taxon") |>
+  dplyr::select(taxon, wi.eBH, effect) |>
+  dplyr::arrange(desc(effect))
+
+virus_species_ca_cleaned_corepair_display_table
+
+# 如果没有显著结果，则展示趋势性差异
+if (nrow(virus_species_ca_cleaned_corepair_display_table) == 0) {
+  virus_species_ca_cleaned_corepair_trending_aldex <- virus_species_ca_cleaned_corepair_aldex_out |>
+    dplyr::filter(abs(effect) > 1) |>
+    dplyr::filter(wi.eBH < 0.5) |>
+    dplyr::arrange(desc(abs(effect)))
+
+  virus_species_ca_cleaned_corepair_display_table <- virus_species_ca_cleaned_corepair_trending_aldex |>
+    tibble::rownames_to_column(var = "taxon") |>
+    dplyr::select(taxon, wi.eBH, effect, diff.btw) |>
+    dplyr::arrange(desc(effect))
+}
+
+virus_species_ca_cleaned_corepair_display_table
+# 如此条件下无法筛选出有效数据。
+
+# 保存结果
+write.csv(
+  virus_species_ca_cleaned_corepair_display_table,
+  file = here::here("data", params$name, "32_daa_aldex2_virus_species.csv"),
+  row.names = FALSE
+)
+
+# ------------------------------------------------------------------------------
+# 4.使用 ALDEx2 进行验证（交叉验证） (ApcMUT_HpWT vs ApcMUT_HpKO)(genus)
+# ------------------------------------------------------------------------------
+virus_genus_ca_corepair_pure_counts <- as.matrix(assay(tse_virus_genus_ca_corepair, "counts"))
+mode(virus_genus_ca_corepair_pure_counts) <- "numeric"
+
+virus_genus_ca_corepair_group_vector <- as.character(tse_virus_genus_ca_corepair$treatment_group)
+
+# 4.1 生成蒙特卡洛抽样并进行 CLR 转换
+virus_genus_ca_corepair_x_aldex <- ALDEx2::aldex.clr(
+  reads      = virus_genus_ca_corepair_pure_counts,
+  conds      = virus_genus_ca_corepair_group_vector,
+  mc.samples = 128,
+  verbose    = FALSE
+)
+
+# 4.2 运行 Wilcoxon 检验和效应值计算
+virus_genus_ca_corepair_x_tt <- aldex.ttest(virus_genus_ca_corepair_x_aldex, paired.test = FALSE)
+virus_genus_ca_corepair_x_effect <- aldex.effect(virus_genus_ca_corepair_x_aldex, CI = TRUE)
+
+# 4.3 合并结果
+virus_genus_ca_corepair_aldex_out <- data.frame(virus_genus_ca_corepair_x_tt, virus_genus_ca_corepair_x_effect)
+
+# 筛选趋势性差异的属
+virus_genus_ca_corepair_trending_aldex <- virus_genus_ca_corepair_aldex_out |>
+  dplyr::filter(abs(effect) > 1) |>
+  dplyr::filter(wi.eBH < 0.5) |>
+  dplyr::arrange(desc(abs(effect)))
+
+virus_genus_ca_corepair_display_table <- virus_genus_ca_corepair_trending_aldex |>
+  tibble::rownames_to_column(var = "taxon") |>
+  dplyr::select(taxon, wi.eBH, effect, diff.btw) |>
+  dplyr::arrange(desc(effect))
+
+virus_genus_ca_corepair_display_table
+# 如此条件下无法筛选出有效数据。
+
+# 保存结果
+write.csv(
+  virus_genus_ca_corepair_display_table,
+  file = here::here("data", params$name, "33_daa_aldex2_virus_genus.csv"),
+  row.names = FALSE
+)
+```
+进一步说明没有差异。
+
+
+
+```{r}
+#| label: data-visualization
+
+# Your visualization code here
+```
+
+
+## Files written
+
+These files have been written to the target directory, `r paste0("data/", params$name)`:
+
+```{r}
+#| label: list-files-target
+#| include: false
+projthis::proj_dir_info(path_target(), tz = "CET")
+```

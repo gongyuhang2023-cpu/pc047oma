@@ -1,0 +1,3443 @@
+---
+title: "02_functional_profiling"
+title-block-banner: true
+author:
+  - name: Gong Yuhang
+date: 2026-01-02
+toc: true
+toc-depth: 4
+number-sections: true
+code-fold: true
+code-line-numbers: true
+code-tools: true
+format: 
+  html:
+    embed-resources: true
+    smooth-scroll: true
+    page-layout: full
+reference-location: section
+citation-location: document
+params:
+  name: "02_functional_profiling"
+---
+
+**Updated: `r format(Sys.time(), '%Y-%m-%d %H:%M:%S', tz = 'CET')` CET.**
+
+The purpose of this document is:
+本文档是项目 pc047 (vCagAepitope) 的**功能分析模块**。
+
+**核心问题**：CagA依赖性感染是否改变了肠道微生物的**代谢功能潜力**？
+
+**分析逻辑**：
+- 01文档回答了"Who is there?"（物种组成）→ 发现细菌Beta多样性显著改变
+- 本文档回答"What are they capable of?"（功能潜力）→ 验证"Functional Footprint"假说
+
+**分析大纲**：
+1. Part 1: 理解HUMAnN数据 & 数据导入
+2. Part 2: 功能多样性分析（Alpha + Beta）
+3. Part 3: 通路差异丰度分析（DAA）
+4. Part 4: 驱动物种分析（哪个物种贡献了差异功能）
+
+```{r}
+#| label: params
+#| eval: !expr interactive()
+#| include: false
+params = list(name = "02_functional_profiling")
+```
+
+```{r}
+#| label: setup
+#| message: false
+#| include: false
+#| warning: false
+wd <- "analyses"
+if (basename(getwd()) != wd) {
+  setwd(here::here(wd))
+}
+here::i_am(paste0(params$name, ".qmd"), uuid = "d6613823-c989-483d-882d-c291d9825657")
+projthis::proj_create_dir_target(params$name, clean = FALSE)
+path_target <- projthis::proj_path_target(params$name)
+path_source <- projthis::proj_path_source(params$name)
+path_raw <- path_source("00-raw")
+path_resource <- here::here(path_raw, "d00-resource")
+path_data <- here::here(path_raw, paste0("d", params$name))
+dir.create(path_raw, recursive = TRUE, showWarnings = FALSE)
+dir.create(path_data, recursive = TRUE, showWarnings = FALSE)
+dir.create(path_resource, recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r}
+#| label: packages
+#| message: false
+suppressPackageStartupMessages({
+  library(here)
+  library(conflicted)
+  library(tidyverse)
+  library(data.table)
+  library(mia)
+  library(TreeSummarizedExperiment)
+  library(readxl)
+  library(miaViz)
+  library(scuttle)
+  library(patchwork)
+  library(MatrixGenerics)
+  library(stringr)
+  library(ggpubr)
+  library(scater)
+  library(vegan)
+  library(ggplot2)
+  library(RColorBrewer)
+  library(Maaslin2)
+  devtools::load_all()
+})
+
+# 解决命名空间冲突
+conflicts_prefer(base::setdiff)
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(dplyr::select)
+conflicts_prefer(dplyr::lag)
+conflicts_prefer(dplyr::first)
+conflicts_prefer(ggplot2::annotate)
+
+set.seed(20261)
+```
+
+## Part 1: 理解HUMAnN数据 & 数据导入
+
+### 1.1 HUMAnN数据结构概述
+
+HUMAnN (HMP Unified Metabolic Analysis Network) 是功能宏基因组分析的标准工具，输出三种主要数据：
+
+1. **Gene families** (基因家族): UniRef90聚类的基因丰度
+2. **Pathways** (代谢通路): MetaCyc数据库定义的代谢通路丰度 ← 本分析主要使用
+3. **Reactions** (反应): 生化反应丰度
+
+每种数据都有两个版本：
+- **Unstratified**: 通路总丰度（用于多样性和DAA分析）
+- **Stratified**: 按物种分解的丰度（用于驱动物种分析）
+
+### 1.2 数据导入
+
+```{r}
+#| label: load-pathway-data
+
+# 定义数据路径
+humann_data_dir <- here::here(path_data, "humann4")
+
+# 读取unstratified pathway abundance (主要分析对象)
+pathway_unstrat <- fread(
+  file.path(humann_data_dir, "humann4_pathabundance-step2-normalized_unstratified.tsv"),
+  header = TRUE
+)
+
+# 查看数据维度
+cat("=== Pathway Abundance (Unstratified) ===\n")
+cat("维度:", nrow(pathway_unstrat), "通路 x", ncol(pathway_unstrat) - 1, "样本\n\n")
+
+# 查看前几行
+head(pathway_unstrat[, 1:5], 10)
+```
+
+```{r}
+#| label: understand-special-rows
+
+# 理解特殊行：UNMAPPED 和 UNINTEGRATED
+cat("=== 特殊行说明 ===\n")
+cat("UNMAPPED: 无法比对到已知序列的reads比例\n")
+cat("UNINTEGRATED: reads比对成功但未能整合到通路\n\n")
+
+# 检查UNMAPPED和UNINTEGRATED的比例
+first_col_name <- colnames(pathway_unstrat)[1]
+unmapped_row <- pathway_unstrat[get(first_col_name) == "UNMAPPED"]
+unintegrated_row <- pathway_unstrat[get(first_col_name) == "UNINTEGRATED"]
+
+cat("UNMAPPED 范围:",
+    round(min(as.numeric(unmapped_row[, -1, with = FALSE])), 0), "-",
+    round(max(as.numeric(unmapped_row[, -1, with = FALSE])), 0), "\n")
+cat("UNINTEGRATED 范围:",
+    round(min(as.numeric(unintegrated_row[, -1, with = FALSE])), 0), "-",
+    round(max(as.numeric(unintegrated_row[, -1, with = FALSE])), 0), "\n")
+```
+
+### 1.3 数据清洗：创建分析用矩阵
+
+```{r}
+#| label: prepare-pathway-matrix
+
+# 移除UNMAPPED和UNINTEGRATED行（用于多样性分析）
+pathway_clean <- pathway_unstrat[!get(first_col_name) %in% c("UNMAPPED", "UNINTEGRATED")]
+
+cat("清洗后通路数量:", nrow(pathway_clean), "\n")
+
+# 转换为矩阵格式
+pathway_names <- pathway_clean[[1]]
+pathway_matrix <- as.matrix(pathway_clean[, -1, with = FALSE])
+rownames(pathway_matrix) <- pathway_names
+
+# 清理样本名（去除_Abundance后缀）
+colnames(pathway_matrix) <- gsub("_Abundance$", "", colnames(pathway_matrix))
+
+# 排除ca08样本
+# 原因：01分析中发现ca08的Escherichia coli相对丰度异常偏高，
+# 疑似检测过程中引入杂质污染，详见01_alpha_beta_diversity_analysis.qmd
+# 为保持分析一致性，在功能分析中同样排除该样本
+samples_to_exclude <- "ca08"
+pathway_matrix <- pathway_matrix[, !colnames(pathway_matrix) %in% samples_to_exclude]
+cat("排除样本:", samples_to_exclude, "\n")
+
+# 查看矩阵结构
+cat("\n矩阵维度:", nrow(pathway_matrix), "通路 x", ncol(pathway_matrix), "样本\n")
+cat("样本名:", paste(head(colnames(pathway_matrix), 5), collapse = ", "), "...\n")
+```
+
+### 1.4 导入样本元数据
+
+```{r}
+#| label: load-metadata
+
+# 从01文档保存的TSE中读取元数据
+tse_species <- readRDS(
+  here::here("data", "01_alpha_beta_diversity_analysis", "tse_standard_species_ca_cleaned.rds")
+)
+
+# 提取元数据
+metadata <- as.data.frame(colData(tse_species))
+
+# 确保样本名一致
+common_samples <- base::intersect(colnames(pathway_matrix), rownames(metadata))
+cat("共同样本数:", length(common_samples), "\n")
+
+# 子集化并排序
+pathway_matrix <- pathway_matrix[, common_samples]
+metadata <- metadata[common_samples, ]
+
+# 查看分组信息
+cat("\n样本分组:\n")
+print(table(metadata$cag_hpstatus))
+```
+
+### 1.5 创建TreeSummarizedExperiment对象
+
+```{r}
+#| label: create-tse-pathway
+
+# ------------------------------------------------------------------------------
+# 创建TreeSummarizedExperiment对象
+# 虽然pathway数据没有phylogenetic tree，但使用TSE可以：
+# 1. 与mia生态系统完全兼容（addAlpha, addMDS, getPERMANOVA等）
+# 2. 保持与01文档一致的数据结构
+# 3. 便于后续扩展（如添加pathway层级信息作为rowTree）
+# ------------------------------------------------------------------------------
+
+# 创建pathway的rowData（包含通路名称信息）
+humann_pathway_rowdata <- DataFrame(
+  pathway_id = rownames(pathway_matrix),
+  row.names = rownames(pathway_matrix)
+)
+
+# 创建TSE对象
+tse_humann_pathway_ca <- TreeSummarizedExperiment(
+  assays = list(abundance = pathway_matrix),
+  colData = DataFrame(metadata),
+  rowData = humann_pathway_rowdata
+)
+
+# 查看对象
+cat("=== TSE HUMAnN Pathway 对象信息 ===\n")
+print(tse_humann_pathway_ca)
+cat("\n")
+cat("类型:", class(tse_humann_pathway_ca)[1], "\n")
+cat("Assays:", assayNames(tse_humann_pathway_ca), "\n")
+cat("样本数:", ncol(tse_humann_pathway_ca), "\n")
+cat("通路数:", nrow(tse_humann_pathway_ca), "\n")
+```
+
+### 1.6 数据质量概览
+
+```{r}
+#| label: qc-library-size
+
+# 计算每个样本的总通路丰度（library size）
+library_sizes <- colSums(pathway_matrix)
+
+# 可视化
+library_df <- data.frame(
+  sample = names(library_sizes),
+  library_size = library_sizes,
+  group = metadata$treatment_group  # 修改为 metadata 中实际存在的列名
+)
+
+p_libsize <- ggplot(library_df, aes(x = reorder(sample, library_size), y = library_size, fill = group)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(
+    title = "Pathway Abundance Library Size per Sample",
+    x = "Sample",
+    y = "Total Pathway Abundance (CPM)",
+    fill = "Group"
+  ) +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 6))
+
+print(p_libsize)
+
+# 保存图表
+ggsave(path_target("01_qc_pathway_library_size.png"), p_libsize,
+       width = 10, height = 8, dpi = 150)
+```
+
+```{r}
+#| label: save-tse-pathway
+
+# 保存TSE对象供后续分析使用
+saveRDS(tse_humann_pathway_ca, path_target("tse_humann_pathway_ca.rds"))
+cat("✓ TSE对象已保存:", path_target("tse_humann_pathway_ca.rds"), "\n")
+```
+
+
+## Part 2: 功能多样性分析
+
+**科学问题**：CagA感染是否改变了肠道微生物组的功能多样性？
+
+与物种多样性类似，功能多样性也可以从两个维度分析：
+- **Alpha多样性**：单个样本内的功能丰富度（有多少种代谢通路）
+- **Beta多样性**：样本间的功能组成差异（通路组成是否不同）
+
+### 2.1 筛选核心比较组
+
+```{r}
+#| label: humann-subset-corepair
+
+# ------------------------------------------------------------------------------
+# 筛选核心比较组：ApcMUT_HpWT vs ApcMUT_HpKO
+# 与01文档保持一致，聚焦于Apc突变背景下CagA的效应
+# ------------------------------------------------------------------------------
+tse_humann_pathway_ca_corepair <- tse_humann_pathway_ca[
+  , tse_humann_pathway_ca$treatment_group %in% c("ApcMUT_HpWT", "ApcMUT_HpKO")
+]
+
+# 移除不再使用的因子水平
+tse_humann_pathway_ca_corepair$treatment_group <- droplevels(
+  factor(tse_humann_pathway_ca_corepair$treatment_group)
+)
+
+cat("=== 核心比较组样本信息 ===\n")
+cat("样本数:", ncol(tse_humann_pathway_ca_corepair), "\n")
+cat("通路数:", nrow(tse_humann_pathway_ca_corepair), "\n\n")
+print(table(tse_humann_pathway_ca_corepair$treatment_group))
+```
+
+### 2.2 Alpha多样性分析
+
+```{r}
+#| label: humann-alpha-diversity
+
+# ------------------------------------------------------------------------------
+# 使用mia包的addAlpha()函数计算Alpha多样性
+# 直接在TSE对象内部完成计算，结果存入colData
+# ------------------------------------------------------------------------------
+tse_humann_pathway_ca_corepair <- addAlpha(
+  tse_humann_pathway_ca_corepair,
+  assay.type = "abundance",
+  index = c("shannon", "observed"),
+  name = c("humann_shannon_index", "humann_observed_richness")
+)
+
+# 查看计算结果
+cat("=== Alpha多样性计算完成 ===\n")
+head(colData(tse_humann_pathway_ca_corepair)[, c("treatment_group", "humann_shannon_index", "humann_observed_richness")])
+```
+
+```{r}
+#| label: humann-alpha-stats
+
+# ------------------------------------------------------------------------------
+# Alpha多样性统计检验
+# ------------------------------------------------------------------------------
+humann_alpha_df <- as.data.frame(colData(tse_humann_pathway_ca_corepair))
+
+# Wilcoxon检验 - Observed Richness
+humann_wilcox_richness <- wilcox.test(
+  humann_observed_richness ~ treatment_group,
+  data = humann_alpha_df
+)
+
+# Wilcoxon检验 - Shannon
+humann_wilcox_shannon <- wilcox.test(
+  humann_shannon_index ~ treatment_group,
+  data = humann_alpha_df
+)
+
+cat("=== 功能Alpha多样性统计检验 ===\n\n")
+cat("Observed Richness (通路数量):\n")
+cat("  W =", humann_wilcox_richness$statistic,
+    ", p-value =", round(humann_wilcox_richness$p.value, 4), "\n\n")
+
+cat("Shannon Index (多样性指数):\n")
+cat("  W =", humann_wilcox_shannon$statistic,
+    ", p-value =", round(humann_wilcox_shannon$p.value, 4), "\n")
+```
+
+```{r}
+#| label: humann-alpha-plot
+#| fig-width: 12
+#| fig-height: 5
+
+# ------------------------------------------------------------------------------
+# Alpha多样性可视化
+# ------------------------------------------------------------------------------
+
+# Richness箱线图
+p2_1_humann_richness <- ggplot(
+  humann_alpha_df,
+  aes(x = treatment_group, y = humann_observed_richness, fill = treatment_group)
+) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+  geom_jitter(width = 0.2, size = 2, alpha = 0.6) +
+  stat_compare_means(method = "wilcox.test", label = "p.format") +
+  labs(
+    title = "Functional Richness (HUMAnN Pathways)",
+    subtitle = "Number of detected MetaCyc pathways per sample",
+    x = "Treatment Group",
+    y = "Pathway Richness"
+  ) +
+  theme_bw() +
+  theme(legend.position = "none")
+
+# Shannon箱线图
+p2_1_humann_shannon <- ggplot(
+  humann_alpha_df,
+  aes(x = treatment_group, y = humann_shannon_index, fill = treatment_group)
+) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+  geom_jitter(width = 0.2, size = 2, alpha = 0.6) +
+  stat_compare_means(method = "wilcox.test", label = "p.format") +
+  labs(
+    title = "Functional Shannon Diversity",
+    subtitle = "Pathway abundance evenness",
+    x = "Treatment Group",
+    y = "Shannon Index"
+  ) +
+  theme_bw() +
+  theme(legend.position = "none")
+
+# 组合图
+p2_1_humann_alpha_combined <- ggarrange(
+  p2_1_humann_richness, p2_1_humann_shannon,
+  ncol = 2, nrow = 1
+)
+print(p2_1_humann_alpha_combined)
+
+# 保存
+ggsave(
+  path_target("02_alpha_diversity_humann_pathway.png"),
+  p2_1_humann_alpha_combined,
+  width = 12, height = 5, dpi = 300
+)
+```
+
+### 2.3 Beta多样性分析
+
+```{r}
+#| label: humann-beta-relabundance
+
+# ------------------------------------------------------------------------------
+# 转换为相对丰度用于Beta多样性分析
+# ------------------------------------------------------------------------------
+tse_humann_pathway_ca_corepair <- transformAssay(
+  tse_humann_pathway_ca_corepair,
+  assay.type = "abundance",
+  method = "relabundance"
+)
+
+cat("=== 相对丰度转换完成 ===\n")
+cat("Assays:", assayNames(tse_humann_pathway_ca_corepair), "\n")
+```
+
+```{r}
+#| label: humann-beta-pcoa
+#| fig-width: 10
+#| fig-height: 8
+
+# ------------------------------------------------------------------------------
+# 计算Bray-Curtis距离并进行PCoA降维
+# ------------------------------------------------------------------------------
+tse_humann_pathway_ca_corepair <- addMDS(
+  tse_humann_pathway_ca_corepair,
+  assay.type = "relabundance",
+  method = "bray",
+  name = "PCoA_bray"
+)
+
+# 提取PCoA结果和特征值
+humann_pcoa_bray <- reducedDim(tse_humann_pathway_ca_corepair, "PCoA_bray")
+humann_eigenvalues_bray <- attr(humann_pcoa_bray, "eig")
+humann_relative_eigenvalues_bray <- humann_eigenvalues_bray / sum(humann_eigenvalues_bray)
+
+# 创建绘图数据框
+humann_pcoa_df <- data.frame(
+  PC1 = humann_pcoa_bray[, 1],
+  PC2 = humann_pcoa_bray[, 2],
+  treatment_group = colData(tse_humann_pathway_ca_corepair)$treatment_group
+)
+
+# PCoA可视化
+p2_2_humann_pcoa <- ggplot(
+  humann_pcoa_df,
+  aes(x = PC1, y = PC2, color = treatment_group)
+) +
+  geom_point(size = 4, alpha = 0.8) +
+  stat_ellipse(level = 0.95, linetype = "dashed") +
+  theme_bw() +
+  labs(
+    title = "PCoA based on Bray-Curtis Dissimilarity (HUMAnN Pathways)",
+    x = paste0("PCoA 1 (", round(100 * humann_relative_eigenvalues_bray[1], 1), "%)"),
+    y = paste0("PCoA 2 (", round(100 * humann_relative_eigenvalues_bray[2], 1), "%)")
+  )
+
+print(p2_2_humann_pcoa)
+
+# 保存
+ggsave(
+  path_target("03_beta_pcoa_bray_humann_pathway.png"),
+  p2_2_humann_pcoa,
+  width = 10, height = 8, dpi = 300
+)
+```
+
+```{r}
+#| label: humann-permanova
+
+# ------------------------------------------------------------------------------
+# PERMANOVA检验：功能组成是否在组间存在显著差异
+# 使用mia包的getPERMANOVA()函数
+# ------------------------------------------------------------------------------
+humann_pathway_permanova_result <- getPERMANOVA(
+  tse_humann_pathway_ca_corepair,
+  assay.type = "relabundance",
+  formula = x ~ treatment_group
+)
+
+cat("=== PERMANOVA分析 (HUMAnN Pathways) ===\n\n")
+print(humann_pathway_permanova_result$permanova)
+
+# 保存PERMANOVA结果
+write.csv(
+  humann_pathway_permanova_result$permanova,
+  file = path_target("04_permanova_bray_humann_pathway.csv"),
+  row.names = TRUE
+)
+
+cat("\n解读：\n")
+humann_permanova_p <- humann_pathway_permanova_result$permanova$`Pr(>F)`[1]
+humann_permanova_r2 <- humann_pathway_permanova_result$permanova$R2[1]
+cat("- R² =", round(humann_permanova_r2, 4),
+    "表示组间差异解释了", round(humann_permanova_r2 * 100, 1), "% 的功能变异\n")
+cat("- p-value =", humann_permanova_p, "\n")
+if (humann_permanova_p < 0.05) {
+  cat("- 结论：功能组成在两组之间存在显著差异\n")
+} else {
+  cat("- 结论：功能组成在两组之间无显著差异\n")
+}
+```
+
+### 2.4 功能多样性小结
+
+```{r}
+#| label: humann-diversity-summary
+
+cat("========================================\n")
+cat("   功能多样性分析结果汇总 (HUMAnN)\n")
+cat("========================================\n\n")
+
+cat("【Alpha多样性】\n")
+cat("- Observed Richness (通路数量): p =", round(humann_wilcox_richness$p.value, 4), "\n")
+cat("- Shannon Index (多样性指数): p =", round(humann_wilcox_shannon$p.value, 4), "\n\n")
+
+cat("【Beta多样性】\n")
+cat("- PERMANOVA R² =", round(humann_permanova_r2, 4), "\n")
+cat("- PERMANOVA p =", humann_permanova_p, "\n\n")
+
+cat("【与01文档物种多样性对比】\n")
+cat("  | 分析层面     | Alpha多样性 | Beta多样性 |\n")
+cat("  |--------------|-------------|------------|\n")
+cat("  | 物种组成(01) | p=0.73      | p=0.012    |\n")
+cat("  | 功能通路(02) | p=", round(humann_wilcox_shannon$p.value, 3),
+    "     | p=", humann_permanova_p, "   |\n\n")
+
+cat("【生物学解读】\n")
+if (humann_permanova_p < 0.05) {
+  cat("CagA感染显著改变了肠道微生物的功能潜力组成。\n")
+  cat("这与01文档中观察到的物种Beta多样性改变相呼应，\n")
+  cat("支持\"功能足迹\"假说：物种组成的改变伴随功能能力的改变。\n")
+} else {
+  cat("功能组成在组间无显著差异。\n")
+  cat("可能存在功能冗余：不同物种可以执行相似的代谢功能。\n")
+  cat("这提示虽然物种组成改变，但整体代谢功能潜力保持稳定。\n")
+}
+```
+
+
+## Part 3: 通路差异丰度分析 (DAA)
+
+**科学问题**：哪些具体的代谢通路在CagA感染后发生了显著变化？
+
+差异丰度分析（Differential Abundance Analysis, DAA）可以识别出在两组之间丰度有显著差异的功能通路，从而揭示CagA感染可能影响的具体代谢过程。
+
+### 3.1 使用MaAsLin2进行差异分析
+
+根据HUMAnN4 Analysis Protocol推荐，使用**MaAsLin2**（Microbiome Multivariable Associations with Linear Models）进行差异丰度分析。MaAsLin2专门设计用于处理微生物组数据的组成性和稀疏性特点，且能正确处理已标准化的CPM数据。
+
+```{r}
+#| label: humann-daa-maaslin2-prep
+
+# ------------------------------------------------------------------------------
+# 准备MaAsLin2输入数据
+# MaAsLin2需要：
+# 1. 丰度矩阵（samples x features，即样本在行，通路在列）
+# 2. 元数据表（samples x variables）
+# ------------------------------------------------------------------------------
+
+# 提取丰度矩阵并转置（MaAsLin2要求 samples 在行，features 在列）
+humann_pathway_matrix_for_maaslin <- t(as.matrix(
+  assay(tse_humann_pathway_ca_corepair, "abundance")
+))
+
+# 提取元数据
+humann_metadata_for_maaslin <- as.data.frame(
+  colData(tse_humann_pathway_ca_corepair)
+)
+
+# 确保样本名一致
+stopifnot(all(rownames(humann_pathway_matrix_for_maaslin) == rownames(humann_metadata_for_maaslin)))
+
+cat("=== MaAsLin2数据准备 ===\n")
+cat("丰度矩阵维度:", nrow(humann_pathway_matrix_for_maaslin), "样本 x",
+    ncol(humann_pathway_matrix_for_maaslin), "通路\n")
+cat("元数据维度:", nrow(humann_metadata_for_maaslin), "样本 x",
+    ncol(humann_metadata_for_maaslin), "变量\n")
+cat("分组变量:", paste(unique(humann_metadata_for_maaslin$treatment_group), collapse = " vs "), "\n")
+```
+
+```{r}
+#| label: humann-daa-maaslin2-run
+#| message: false
+#| warning: false
+#| results: hide
+
+# ------------------------------------------------------------------------------
+# 运行MaAsLin2分析
+# 参数说明：
+# - normalization = "NONE": HUMAnN数据已经是CPM标准化，无需再次标准化
+# - transform = "LOG": 对数转换以稳定方差
+# - analysis_method = "LM": 线性模型
+# - correction = "BH": Benjamini-Hochberg FDR校正
+# - min_prevalence = 0.1: 至少10%样本中存在的通路才纳入分析
+# ------------------------------------------------------------------------------
+
+# 创建输出目录
+maaslin2_output_dir <- path_target("maaslin2_pathway_results")
+
+# 运行MaAsLin2
+humann_maaslin2_result <- Maaslin2(
+  input_data      = humann_pathway_matrix_for_maaslin,
+  input_metadata  = humann_metadata_for_maaslin,
+  output          = maaslin2_output_dir,
+  fixed_effects   = c("treatment_group"),
+  normalization   = "NONE",
+  transform       = "LOG",
+  analysis_method = "LM",
+  correction      = "BH",
+  min_abundance   = 0.0,
+  min_prevalence  = 0.1,
+  plot_heatmap    = TRUE,
+  plot_scatter    = TRUE,
+  cores           = 1
+)
+
+cat("=== MaAsLin2分析完成 ===\n")
+cat("结果目录:", maaslin2_output_dir, "\n")
+```
+
+```{r}
+#| label: humann-daa-maaslin2-results
+
+# ------------------------------------------------------------------------------
+# 整理MaAsLin2结果
+# ------------------------------------------------------------------------------
+
+# 提取结果并排序
+humann_maaslin2_summary <- humann_maaslin2_result$results |>
+  dplyr::arrange(qval) |>
+  dplyr::select(
+    pathway = feature,
+    coef,           # 系数（正值表示在HpWT中富集）
+    stderr,         # 标准误
+    pval,           # 原始p值
+    qval            # FDR校正后q值
+  )
+
+# 筛选显著差异的通路
+humann_significant_pathways <- humann_maaslin2_summary |>
+  dplyr::filter(qval < 0.05)
+
+cat("=== MaAsLin2结果摘要 ===\n")
+cat("检测通路总数:", nrow(humann_maaslin2_summary), "\n")
+cat("显著差异通路数 (q < 0.05):", nrow(humann_significant_pathways), "\n")
+cat("趋势性差异通路数 (q < 0.1):", sum(humann_maaslin2_summary$qval < 0.1), "\n")
+cat("趋势性差异通路数 (q < 0.2):", sum(humann_maaslin2_summary$qval < 0.2), "\n\n")
+
+# 显示Top 15结果
+cat("=== Top 15 差异通路 (按q值排序) ===\n")
+print(head(humann_maaslin2_summary, 15))
+```
+
+```{r}
+#| label: humann-daa-maaslin2-save
+
+# 保存完整MaAsLin2结果
+write.csv(
+  humann_maaslin2_summary,
+  file = path_target("05_daa_maaslin2_humann_pathway_full.csv"),
+  row.names = FALSE
+)
+
+# 保存Top 20结果
+humann_maaslin2_top20 <- head(humann_maaslin2_summary, 20)
+write.csv(
+  humann_maaslin2_top20,
+  file = path_target("06_daa_maaslin2_humann_pathway_top20.csv"),
+  row.names = FALSE
+)
+
+cat("✓ MaAsLin2结果已保存\n")
+cat("✓ 详细结果目录:", maaslin2_output_dir, "\n")
+```
+
+### 3.2 差异通路可视化
+
+```{r}
+#| label: humann-daa-volcano
+#| fig-width: 12
+#| fig-height: 8
+
+# ------------------------------------------------------------------------------
+# 火山图：展示差异通路
+# ------------------------------------------------------------------------------
+
+# 准备绘图数据（使用MaAsLin2结果）
+humann_volcano_df <- humann_maaslin2_summary |>
+  dplyr::mutate(
+    neg_log10_q = -log10(qval),
+    significance = case_when(
+      qval < 0.05 & coef > 0 ~ "Enriched in HpWT (q<0.05)",
+      qval < 0.05 & coef < 0 ~ "Depleted in HpWT (q<0.05)",
+      qval < 0.1 ~ "Trending (q<0.1)",
+      TRUE ~ "Not significant"
+    ),
+    # 简化通路名称用于标注
+    pathway_short = stringr::str_trunc(pathway, 50)
+  )
+
+# 火山图
+p3_1_humann_volcano <- ggplot(
+  humann_volcano_df,
+  aes(x = coef, y = neg_log10_q, color = significance)
+) +
+  geom_point(alpha = 0.6, size = 2) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
+  geom_hline(yintercept = -log10(0.1), linetype = "dashed", color = "orange") +
+  geom_vline(xintercept = 0, linetype = "solid", color = "grey50") +
+  scale_color_manual(values = c(
+    "Enriched in HpWT (q<0.05)" = "#E41A1C",
+    "Depleted in HpWT (q<0.05)" = "#377EB8",
+    "Trending (q<0.1)" = "#FF7F00",
+    "Not significant" = "grey70"
+  )) +
+  # 标注Top差异通路
+  ggrepel::geom_text_repel(
+    data = humann_volcano_df |> dplyr::filter(qval < 0.2) |> head(10),
+    aes(label = pathway_short),
+    size = 2.5,
+    max.overlaps = 15,
+    box.padding = 0.5
+  ) +
+  labs(
+    title = "Volcano Plot: Differential Pathway Abundance (MaAsLin2)",
+    subtitle = "HUMAnN MetaCyc Pathways: ApcMUT_HpWT vs ApcMUT_HpKO",
+    x = "Coefficient (positive = enriched in HpWT)",
+    y = "-log10(q-value)",
+    color = "Significance"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(p3_1_humann_volcano)
+
+ggsave(
+  path_target("07_volcano_daa_humann_pathway.png"),
+  p3_1_humann_volcano,
+  width = 12, height = 8, dpi = 300
+)
+```
+
+```{r}
+#| label: humann-daa-barplot
+#| fig-width: 14
+#| fig-height: 8
+
+# ------------------------------------------------------------------------------
+# 条形图：展示Top差异通路的系数
+# ------------------------------------------------------------------------------
+
+# 选择Top 20通路（按q值）
+humann_top20_for_plot <- humann_maaslin2_summary |>
+  head(20) |>
+  dplyr::mutate(
+    pathway_short = stringr::str_trunc(pathway, 60),
+    direction = ifelse(coef > 0, "Enriched in HpWT", "Depleted in HpWT"),
+    sig_label = case_when(
+      qval < 0.05 ~ "**",
+      qval < 0.1 ~ "*",
+      TRUE ~ ""
+    )
+  )
+
+p3_2_humann_coef_bar <- ggplot(
+  humann_top20_for_plot,
+  aes(x = reorder(pathway_short, coef), y = coef, fill = direction)
+) +
+  geom_bar(stat = "identity", alpha = 0.8) +
+  geom_text(aes(label = sig_label), hjust = ifelse(humann_top20_for_plot$coef > 0, -0.3, 1.3), size = 5) +
+  coord_flip() +
+  scale_fill_manual(values = c("Enriched in HpWT" = "#E41A1C", "Depleted in HpWT" = "#377EB8")) +
+  labs(
+    title = "Top 20 Differentially Abundant Pathways (MaAsLin2)",
+    subtitle = "** q<0.05, * q<0.1 | Positive coefficient = enriched in ApcMUT_HpWT",
+    x = "Pathway",
+    y = "Coefficient",
+    fill = "Direction"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.y = element_text(size = 8),
+    legend.position = "bottom",
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(p3_2_humann_coef_bar)
+
+ggsave(
+  path_target("08_barplot_top20_daa_humann_pathway.png"),
+  p3_2_humann_coef_bar,
+  width = 14, height = 8, dpi = 300
+)
+```
+
+### 3.3 DAA结果小结
+
+```{r}
+#| label: humann-daa-summary
+
+cat("========================================\n")
+cat("   通路差异丰度分析结果汇总 (DAA)\n")
+cat("========================================\n\n")
+
+cat("【MaAsLin2结果】\n")
+cat("- 检测通路总数:", nrow(humann_maaslin2_summary), "\n")
+cat("- 显著差异 (q<0.05):", sum(humann_maaslin2_summary$qval < 0.05), "\n")
+cat("- 趋势性差异 (q<0.1):", sum(humann_maaslin2_summary$qval < 0.1), "\n")
+
+if (nrow(humann_significant_pathways) > 0) {
+  cat("\n显著富集在HpWT的通路:\n")
+  sig_enriched <- humann_significant_pathways |> dplyr::filter(coef > 0)
+  if (nrow(sig_enriched) > 0) {
+    print(sig_enriched |> head(5))
+  } else {
+    cat("  无\n")
+  }
+
+  cat("\n显著在HpWT中减少的通路:\n")
+  sig_depleted <- humann_significant_pathways |> dplyr::filter(coef < 0)
+  if (nrow(sig_depleted) > 0) {
+    print(sig_depleted |> head(5))
+  } else {
+    cat("  无\n")
+  }
+}
+
+cat("\n【生物学解读】\n")
+if (sum(humann_maaslin2_summary$qval < 0.05) > 0) {
+  cat("发现了显著差异的代谢通路，这些通路可能：\n")
+  cat("1. 直接参与CagA诱导的代谢重编程\n")
+  cat("2. 反映特定细菌群落的功能变化\n")
+  cat("3. 产生影响宿主免疫的代谢产物\n")
+} else if (sum(humann_maaslin2_summary$qval < 0.1) > 0) {
+  cat("虽然没有严格显著的通路(q<0.05)，但存在趋势性差异(q<0.1)。\n")
+  cat("这可能反映了功能层面的细微变化，需要结合生物学背景解读。\n")
+} else {
+  cat("功能通路层面未发现显著差异。\n")
+  cat("这支持\"功能冗余\"假说：不同物种可以执行相似的代谢功能，\n")
+  cat("因此即使物种组成改变，整体功能潜力可能保持稳定。\n")
+}
+```
+
+
+## Part 4: 驱动物种分析 (Driver Species Analysis)
+
+**科学问题**：哪些微生物物种贡献了差异代谢通路？
+
+根据Protocol的分析逻辑：
+- Part 3使用**Unstratified**数据发现了差异通路
+- Part 4使用**Stratified**数据追溯：是哪些物种在贡献这些通路？
+
+这种"功能→物种"的反向追溯可以揭示：
+1. 某个通路在不同组中是否由不同物种提供（功能替代）
+2. 差异通路的变化是否由特定物种驱动
+
+### 4.1 导入Stratified数据
+
+```{r}
+#| label: load-stratified-data
+
+# ------------------------------------------------------------------------------
+# 读取stratified pathway abundance数据
+# 该数据包含每个通路按物种分解的丰度
+# 格式：pathway|species → abundance
+# ------------------------------------------------------------------------------
+
+# 读取stratified数据
+pathway_stratified <- fread(
+  file.path(humann_data_dir, "humann4_pathabundance-step2-normalized_stratified.tsv"),
+  header = TRUE
+)
+
+# 查看数据结构
+cat("=== Stratified Pathway Data ===\n")
+cat("维度:", nrow(pathway_stratified), "行 x", ncol(pathway_stratified), "列\n\n")
+
+# 查看前几行（展示pathway|species格式）
+head(pathway_stratified[, 1:4], 10)
+```
+
+```{r}
+#| label: parse-stratified-data
+
+# ------------------------------------------------------------------------------
+# 解析stratified数据：分离pathway和species信息
+# ------------------------------------------------------------------------------
+
+# 获取第一列名称
+first_col <- colnames(pathway_stratified)[1]
+
+# 分离pathway和species
+pathway_stratified_parsed <- pathway_stratified |>
+  dplyr::mutate(
+    # 原始ID
+    original_id = get(first_col),
+    # 分离pathway和species（以"|"分隔）
+    pathway = stringr::str_extract(original_id, "^[^|]+"),
+    species = stringr::str_extract(original_id, "(?<=\\|).+$")
+  ) |>
+  # 只保留有物种注释的行（排除总量行）
+dplyr::filter(!is.na(species))
+
+# 清理样本名
+sample_cols <- base::setdiff(colnames(pathway_stratified_parsed), c(first_col, "original_id", "pathway", "species"))
+colnames(pathway_stratified_parsed) <- gsub("_Abundance$", "", colnames(pathway_stratified_parsed))
+
+# 更新样本列名
+sample_cols <- gsub("_Abundance$", "", sample_cols)
+
+cat("=== 解析后数据 ===\n")
+cat("Pathway-Species组合数:", nrow(pathway_stratified_parsed), "\n")
+cat("唯一通路数:", length(unique(pathway_stratified_parsed$pathway)), "\n")
+cat("唯一物种数:", length(unique(pathway_stratified_parsed$species)), "\n")
+```
+
+### 4.2 筛选Top差异通路的物种贡献
+
+```{r}
+#| label: select-top-pathways
+
+# ------------------------------------------------------------------------------
+# 选择Top差异通路进行驱动物种分析
+# 策略：选择MaAsLin2结果中q值最小的Top通路
+# ------------------------------------------------------------------------------
+
+# 选择Top 5差异通路
+n_top_pathways <- 5
+top_pathways <- humann_maaslin2_summary |>
+  head(n_top_pathways) |>
+  dplyr::pull(pathway)
+
+cat("=== 选择的Top", n_top_pathways, "差异通路 ===\n")
+for (i in seq_along(top_pathways)) {
+  qval <- humann_maaslin2_summary$qval[i]
+  coef <- humann_maaslin2_summary$coef[i]
+  direction <- ifelse(coef > 0, "↑HpWT", "↓HpWT")
+  cat(i, ".", stringr::str_trunc(top_pathways[i], 60),
+      " (q=", round(qval, 3), ", ", direction, ")\n", sep = "")
+}
+```
+
+```{r}
+#| label: extract-species-contributions
+
+# ------------------------------------------------------------------------------
+# 提取Top通路的物种贡献数据
+# ------------------------------------------------------------------------------
+
+# 筛选Top通路的stratified数据
+cat("=== 数据匹配诊断 ===\n")
+cat("Top通路数量:", length(top_pathways), "\n")
+cat("Top通路示例:\n")
+print(head(top_pathways, 3))
+
+cat("\nstratified数据中的通路示例:\n")
+print(head(unique(pathway_stratified_parsed$pathway), 3))
+
+top_pathway_stratified <- pathway_stratified_parsed |>
+  dplyr::filter(pathway %in% top_pathways)
+
+cat("\n匹配到的stratified行数:", nrow(top_pathway_stratified), "\n")
+
+# 获取核心比较组的样本
+corepair_samples <- colnames(tse_humann_pathway_ca_corepair)
+
+# 筛选样本并整理数据
+# 注意：需要确保样本名匹配
+available_samples <- base::intersect(corepair_samples, colnames(top_pathway_stratified))
+
+cat("=== 物种贡献数据 ===\n")
+cat("核心比较组样本数:", length(corepair_samples), "\n")
+cat("stratified数据列名样本:", paste(head(base::setdiff(colnames(top_pathway_stratified), c("# Pathway", "original_id", "pathway", "species")), 3), collapse = ", "), "\n")
+cat("匹配样本数:", length(available_samples), "\n")
+cat("涉及Pathway-Species组合:", nrow(top_pathway_stratified), "\n")
+```
+
+```{r}
+#| label: prepare-driver-analysis-data
+
+# ------------------------------------------------------------------------------
+# 准备驱动物种分析数据
+# 转换为长格式并添加分组信息
+# ------------------------------------------------------------------------------
+
+# 获取样本的分组信息
+sample_groups <- data.frame(
+  sample = colnames(tse_humann_pathway_ca_corepair),
+  treatment_group = as.character(tse_humann_pathway_ca_corepair$treatment_group)
+)
+
+# 转换为长格式
+if (length(available_samples) > 0 && nrow(top_pathway_stratified) > 0) {
+  driver_data_long <- top_pathway_stratified |>
+    dplyr::select(pathway, species, all_of(available_samples)) |>
+    tidyr::pivot_longer(
+      cols = all_of(available_samples),
+      names_to = "sample",
+      values_to = "abundance"
+    ) |>
+    # 添加分组信息
+    dplyr::left_join(sample_groups, by = "sample") |>
+    # 过滤掉NA的分组（非核心比较组样本）
+    dplyr::filter(!is.na(treatment_group))
+} else {
+  # 创建空的driver_data_long以避免后续错误
+  driver_data_long <- data.frame(
+    pathway = character(),
+    species = character(),
+    sample = character(),
+    abundance = numeric(),
+    treatment_group = character()
+  )
+  cat("警告: 没有匹配的样本或stratified数据，创建空数据框\n")
+}
+
+cat("=== 长格式数据 ===\n")
+cat("总行数:", nrow(driver_data_long), "\n")
+if (nrow(driver_data_long) > 0) {
+  cat("唯一通路数:", length(unique(driver_data_long$pathway)), "\n")
+  cat("唯一物种数:", length(unique(driver_data_long$species)), "\n")
+  cat("分组分布:\n")
+  print(table(driver_data_long$treatment_group))
+} else {
+  cat("警告: driver_data_long为空!\n")
+}
+```
+
+### 4.3 计算各组的物种贡献比例
+
+```{r}
+#| label: calculate-species-contribution
+
+# ------------------------------------------------------------------------------
+# 计算每个通路中各物种的平均贡献
+# ------------------------------------------------------------------------------
+
+if (nrow(driver_data_long) > 0) {
+  # 按通路、物种、分组计算平均丰度
+  driver_summary <- driver_data_long |>
+    dplyr::group_by(pathway, species, treatment_group) |>
+    dplyr::summarise(
+      mean_abundance = mean(abundance, na.rm = TRUE),
+      .groups = "drop"
+    ) |>
+    # 计算每个通路在每组中的总丰度
+    dplyr::group_by(pathway, treatment_group) |>
+    dplyr::mutate(
+      total_pathway_abundance = sum(mean_abundance),
+      contribution_pct = ifelse(total_pathway_abundance > 0,
+                                 mean_abundance / total_pathway_abundance * 100,
+                                 0)
+    ) |>
+    dplyr::ungroup()
+
+  # 筛选主要贡献物种（贡献>1%的物种）
+  driver_summary_major <- driver_summary |>
+    dplyr::filter(contribution_pct > 1)
+} else {
+  # 创建空的driver_summary
+  driver_summary <- data.frame(
+    pathway = character(),
+    species = character(),
+    treatment_group = character(),
+    mean_abundance = numeric(),
+    total_pathway_abundance = numeric(),
+    contribution_pct = numeric()
+  )
+  driver_summary_major <- driver_summary
+  cat("警告: driver_data_long为空，无法计算物种贡献\n")
+}
+
+cat("=== 物种贡献统计 ===\n")
+cat("所有物种贡献记录:", nrow(driver_summary), "\n")
+cat("主要贡献物种 (>1%):", nrow(driver_summary_major), "\n")
+```
+
+### 4.4 驱动物种可视化
+
+```{r}
+#| label: driver-species-heatmap
+#| fig-width: 14
+#| fig-height: 10
+
+# ------------------------------------------------------------------------------
+# 热图：展示Top通路的物种贡献
+# ------------------------------------------------------------------------------
+
+# 检查driver_summary数据
+cat("=== driver_summary 数据检查 ===\n")
+cat("总行数:", nrow(driver_summary), "\n")
+cat("唯一通路:", length(unique(driver_summary$pathway)), "\n")
+cat("唯一物种:", length(unique(driver_summary$species)), "\n\n")
+
+# 准备热图数据：选择每个通路的Top 10贡献物种
+driver_heatmap_data <- driver_summary |>
+  # 先简化名称
+  dplyr::mutate(
+    species_short = stringr::str_replace(species, ".*s__", ""),
+    species_short = stringr::str_trunc(species_short, 30),
+    pathway_short = stringr::str_trunc(pathway, 40)
+  ) |>
+  # 按通路分组，选择Top 10
+  dplyr::group_by(pathway_short, treatment_group) |>
+  dplyr::slice_max(order_by = mean_abundance, n = 10, with_ties = FALSE) |>
+  dplyr::ungroup()
+
+cat("热图数据行数:", nrow(driver_heatmap_data), "\n")
+
+# 只有数据存在且facet变量有效时才绑图
+n_unique_pathways <- length(unique(driver_heatmap_data$pathway_short[!is.na(driver_heatmap_data$pathway_short) & driver_heatmap_data$pathway_short != ""]))
+cat("唯一pathway_short数量:", n_unique_pathways, "\n")
+
+if (nrow(driver_heatmap_data) > 0 && n_unique_pathways > 0) {
+  # 创建热图
+  p4_1_driver_heatmap <- ggplot(
+    driver_heatmap_data,
+    aes(x = treatment_group, y = species_short, fill = log10(mean_abundance + 1))
+  ) +
+    geom_tile(color = "white", linewidth = 0.5) +
+    facet_wrap(~ pathway_short, scales = "free_y", ncol = 2) +
+    scale_fill_viridis_c(option = "plasma", name = "log10(Abundance+1)") +
+    labs(
+      title = "Species Contributions to Top Differential Pathways",
+      subtitle = "Top 10 contributing species per pathway",
+      x = "Treatment Group",
+      y = "Species"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.y = element_text(size = 7),
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      strip.text = element_text(size = 8, face = "bold"),
+      legend.position = "right"
+    )
+
+  print(p4_1_driver_heatmap)
+
+  ggsave(
+    path_target("09_driver_species_heatmap.png"),
+    p4_1_driver_heatmap,
+    width = 14, height = 10, dpi = 300
+  )
+} else {
+  cat("警告: 热图数据为空，跳过绑图\n")
+}
+```
+
+```{r}
+#| label: driver-species-barplot
+#| fig-width: 14
+#| fig-height: 12
+
+# ------------------------------------------------------------------------------
+# 堆叠条形图：展示物种贡献比例
+# ------------------------------------------------------------------------------
+
+if (nrow(driver_summary) > 0) {
+  # 选择每个通路的Top 5贡献物种，其余归为"Other"
+  driver_bar_data <- driver_summary |>
+    dplyr::mutate(
+      pathway_short = stringr::str_trunc(pathway, 50)
+    ) |>
+    dplyr::group_by(pathway_short, treatment_group) |>
+    dplyr::mutate(
+      rank = rank(-mean_abundance, ties.method = "first"),
+      species_grouped = ifelse(rank <= 5, species, "Other")
+    ) |>
+    dplyr::group_by(pathway_short, treatment_group, species_grouped) |>
+    dplyr::summarise(
+      mean_abundance = sum(mean_abundance),
+      .groups = "drop"
+    ) |>
+    # 简化名称
+    dplyr::mutate(
+      species_short = ifelse(
+        species_grouped == "Other",
+        "Other",
+        stringr::str_replace(species_grouped, ".*s__", "")
+      )
+    )
+
+  cat("堆叠条形图数据行数:", nrow(driver_bar_data), "\n")
+
+  if (nrow(driver_bar_data) > 0 && length(unique(driver_bar_data$pathway_short)) > 0) {
+    # 使用colorRampPalette创建足够的颜色
+    n_species <- length(unique(driver_bar_data$species_short))
+    if (n_species <= 12) {
+      species_colors <- RColorBrewer::brewer.pal(max(3, n_species), "Set3")
+    } else {
+      species_colors <- colorRampPalette(RColorBrewer::brewer.pal(12, "Set3"))(n_species)
+    }
+    names(species_colors) <- unique(driver_bar_data$species_short)
+
+    # 堆叠条形图
+    p4_2_driver_bar <- ggplot(
+      driver_bar_data,
+      aes(x = treatment_group, y = mean_abundance, fill = species_short)
+    ) +
+      geom_bar(stat = "identity", position = "stack") +
+      facet_wrap(~ pathway_short, scales = "free_y", ncol = 2) +
+      scale_fill_manual(values = species_colors, name = "Species") +
+      labs(
+        title = "Species Contributions to Top Differential Pathways",
+        subtitle = "Stacked bar showing top 5 species + Other",
+        x = "Treatment Group",
+        y = "Mean Abundance (CPM)"
+      ) +
+      theme_bw() +
+      theme(
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.text = element_text(size = 9, face = "bold"),
+        legend.position = "right"
+      )
+
+    print(p4_2_driver_bar)
+
+    ggsave(
+      path_target("10_driver_species_barplot.png"),
+      p4_2_driver_bar,
+      width = 14, height = 12, dpi = 300
+    )
+  } else {
+    cat("警告: 堆叠条形图数据为空，跳过绑图\n")
+  }
+} else {
+  cat("警告: driver_summary为空，跳过堆叠条形图\n")
+}
+```
+
+### 4.5 识别差异驱动物种
+
+```{r}
+#| label: identify-driver-species
+
+# ------------------------------------------------------------------------------
+# 识别在两组间贡献差异最大的物种
+# 计算每个物种在每个通路中的贡献变化
+# ------------------------------------------------------------------------------
+
+# 宽格式：比较两组间的物种贡献
+driver_comparison <- driver_summary |>
+  dplyr::select(pathway, species, treatment_group, mean_abundance) |>
+  tidyr::pivot_wider(
+    names_from = treatment_group,
+    values_from = mean_abundance,
+    values_fill = 0
+  )
+
+# 计算贡献差异（如果两组都存在）
+if ("ApcMUT_HpWT" %in% colnames(driver_comparison) & "ApcMUT_HpKO" %in% colnames(driver_comparison)) {
+  driver_comparison <- driver_comparison |>
+    dplyr::mutate(
+      diff_abundance = ApcMUT_HpWT - ApcMUT_HpKO,
+      fold_change = ifelse(ApcMUT_HpKO > 0, ApcMUT_HpWT / ApcMUT_HpKO, NA),
+      log2FC = log2(fold_change)
+    ) |>
+    dplyr::arrange(desc(abs(diff_abundance)))
+
+  cat("=== Top 10 差异贡献物种 (按绝对差异) ===\n")
+  top_driver_species <- driver_comparison |>
+    head(10) |>
+    dplyr::mutate(
+      species_short = stringr::str_replace(species, ".*s__", ""),
+      pathway_short = stringr::str_trunc(pathway, 40)
+    ) |>
+    dplyr::select(pathway_short, species_short, ApcMUT_HpWT, ApcMUT_HpKO, diff_abundance)
+
+  print(top_driver_species)
+}
+```
+
+```{r}
+#| label: save-driver-results
+
+# ------------------------------------------------------------------------------
+# 保存驱动物种分析结果
+# ------------------------------------------------------------------------------
+
+# 保存完整比较结果
+if (exists("driver_comparison") && nrow(driver_comparison) > 0) {
+  driver_results_full <- driver_comparison |>
+    dplyr::mutate(
+      species_short = stringr::str_replace(species, ".*s__", ""),
+      pathway_short = stringr::str_trunc(pathway, 60)
+    )
+
+  # 根据是否有diff_abundance列决定排序方式
+  if ("diff_abundance" %in% colnames(driver_results_full)) {
+    driver_results_full <- driver_results_full |>
+      dplyr::arrange(pathway, desc(abs(diff_abundance)))
+  } else {
+    # 如果没有diff_abundance，按pathway和species排序
+    driver_results_full <- driver_results_full |>
+      dplyr::arrange(pathway, species)
+    cat("注意: 未找到diff_abundance列，按pathway和species排序\n")
+  }
+
+  write.csv(
+    driver_results_full,
+    file = path_target("11_driver_species_analysis_full.csv"),
+    row.names = FALSE
+  )
+
+  cat("✓ 驱动物种分析结果已保存\n")
+} else {
+  cat("警告: driver_comparison为空，跳过保存\n")
+}
+```
+
+### 4.6 扩展可视化：物种-通路贡献网络
+
+```{r}
+#| label: driver-species-dotplot
+#| fig-width: 12
+#| fig-height: 10
+
+# ------------------------------------------------------------------------------
+# 点图：展示物种在不同通路中的贡献差异
+# X轴：贡献差异，Y轴：物种，颜色：通路，大小：平均贡献
+# ------------------------------------------------------------------------------
+
+if (exists("driver_comparison") && nrow(driver_comparison) > 0 &&
+    "ApcMUT_HpWT" %in% colnames(driver_comparison) &&
+    "ApcMUT_HpKO" %in% colnames(driver_comparison) &&
+    "diff_abundance" %in% colnames(driver_comparison)) {
+
+  # 准备点图数据
+  driver_dotplot_data <- driver_comparison |>
+    dplyr::mutate(
+      species_short = stringr::str_replace(species, ".*s__", ""),
+      pathway_short = stringr::str_trunc(pathway, 35),
+      avg_abundance = (ApcMUT_HpWT + ApcMUT_HpKO) / 2
+    ) |>
+    # 筛选有一定贡献的物种
+    dplyr::filter(avg_abundance > 1) |>
+    # 按差异绝对值排序
+    dplyr::arrange(desc(abs(diff_abundance)))
+
+  cat("点图数据行数:", nrow(driver_dotplot_data), "\n")
+
+  if (nrow(driver_dotplot_data) > 0) {
+    # 获取top50数据
+    plot_data_top50 <- driver_dotplot_data |> head(50)
+
+    # 创建足够的颜色用于通路
+    n_pathways <- length(unique(plot_data_top50$pathway_short))
+    if (n_pathways <= 8) {
+      pathway_colors <- RColorBrewer::brewer.pal(max(3, n_pathways), "Set2")
+    } else {
+      pathway_colors <- colorRampPalette(RColorBrewer::brewer.pal(8, "Set2"))(n_pathways)
+    }
+    names(pathway_colors) <- unique(plot_data_top50$pathway_short)
+
+    # 创建点图
+    p4_3_driver_dotplot <- ggplot(
+      plot_data_top50,
+      aes(x = diff_abundance, y = reorder(species_short, abs(diff_abundance)))
+    ) +
+      geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+      geom_point(aes(color = pathway_short, size = avg_abundance), alpha = 0.7) +
+      scale_color_manual(values = pathway_colors, name = "Pathway") +
+      scale_size_continuous(name = "Avg Abundance", range = c(2, 8)) +
+      labs(
+        title = "Species Contribution Differences Across Pathways",
+        subtitle = "Positive = higher contribution in HpWT | Top 50 species-pathway combinations",
+        x = "Contribution Difference (HpWT - HpKO)",
+        y = "Species",
+        color = "Pathway"
+      ) +
+      theme_bw() +
+      theme(
+        axis.text.y = element_text(size = 8),
+        legend.position = "right",
+        legend.box = "vertical"
+      )
+
+    print(p4_3_driver_dotplot)
+
+    ggsave(
+      path_target("12_driver_species_dotplot.png"),
+      p4_3_driver_dotplot,
+      width = 12, height = 10, dpi = 300
+    )
+  } else {
+    cat("点图数据为空，跳过\n")
+  }
+} else {
+  cat("driver_comparison数据不可用，跳过点图\n")
+}
+```
+
+```{r}
+#| label: driver-species-paired-bar
+#| fig-width: 14
+#| fig-height: 10
+
+# ------------------------------------------------------------------------------
+# 配对条形图：直接比较两组中各物种的贡献
+# ------------------------------------------------------------------------------
+
+if (nrow(driver_summary) > 0) {
+  # 选择贡献最大的Top 15物种（跨所有通路）
+  top_species <- driver_summary |>
+    dplyr::group_by(species) |>
+    dplyr::summarise(total_abundance = sum(mean_abundance), .groups = "drop") |>
+    dplyr::slice_max(order_by = total_abundance, n = 15) |>
+    dplyr::pull(species)
+
+  # 筛选数据
+  driver_paired_data <- driver_summary |>
+    dplyr::filter(species %in% top_species) |>
+    dplyr::mutate(
+      species_short = stringr::str_replace(species, ".*s__", ""),
+      pathway_short = stringr::str_trunc(pathway, 30)
+    )
+
+  cat("配对条形图数据行数:", nrow(driver_paired_data), "\n")
+
+  if (nrow(driver_paired_data) > 0 && length(unique(driver_paired_data$pathway_short)) > 0) {
+    # 配对条形图
+    p4_4_paired_bar <- ggplot(
+      driver_paired_data,
+      aes(x = species_short, y = mean_abundance, fill = treatment_group)
+    ) +
+      geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
+      facet_wrap(~ pathway_short, scales = "free_y", ncol = 2) +
+      scale_fill_manual(
+        values = c("ApcMUT_HpWT" = "#E41A1C", "ApcMUT_HpKO" = "#377EB8"),
+        name = "Treatment"
+      ) +
+      labs(
+        title = "Species Contributions: HpWT vs HpKO",
+        subtitle = "Top 15 contributing species across differential pathways",
+        x = "Species",
+        y = "Mean Abundance (CPM)"
+      ) +
+      theme_bw() +
+      theme(
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
+        strip.text = element_text(size = 8, face = "bold"),
+        legend.position = "top"
+      )
+
+    print(p4_4_paired_bar)
+
+    ggsave(
+      path_target("13_driver_species_paired_bar.png"),
+      p4_4_paired_bar,
+      width = 14, height = 10, dpi = 300
+    )
+  } else {
+    cat("配对条形图数据为空，跳过\n")
+  }
+} else {
+  cat("driver_summary为空，跳过配对条形图\n")
+}
+```
+
+```{r}
+#| label: driver-contribution-heatmap-pct
+#| fig-width: 12
+#| fig-height: 10
+
+# ------------------------------------------------------------------------------
+# 贡献比例热图：展示物种在各通路中的贡献百分比
+# ------------------------------------------------------------------------------
+
+if (nrow(driver_summary) > 0 && "contribution_pct" %in% colnames(driver_summary)) {
+  # 准备百分比热图数据
+  driver_pct_heatmap <- driver_summary |>
+    dplyr::filter(contribution_pct > 2) |>  # 筛选贡献>2%的
+    dplyr::mutate(
+      species_short = stringr::str_replace(species, ".*s__", ""),
+      species_short = stringr::str_trunc(species_short, 25),
+      pathway_short = stringr::str_trunc(pathway, 35)
+    )
+
+  cat("百分比热图数据行数:", nrow(driver_pct_heatmap), "\n")
+
+  if (nrow(driver_pct_heatmap) > 0 && length(unique(driver_pct_heatmap$pathway_short)) > 0) {
+    # 百分比热图
+    p4_5_pct_heatmap <- ggplot(
+      driver_pct_heatmap,
+      aes(x = treatment_group, y = reorder(species_short, contribution_pct), fill = contribution_pct)
+    ) +
+      geom_tile(color = "white", linewidth = 0.3) +
+      geom_text(aes(label = round(contribution_pct, 1)), size = 2.5, color = "black") +
+      facet_wrap(~ pathway_short, scales = "free_y", ncol = 2) +
+      scale_fill_gradient(low = "#FFF5F0", high = "#A50F15", name = "Contribution %") +
+      labs(
+        title = "Species Contribution Percentage to Each Pathway",
+        subtitle = "Only species contributing >2% shown | Numbers indicate contribution %",
+        x = "Treatment Group",
+        y = "Species"
+      ) +
+      theme_minimal() +
+      theme(
+        axis.text.y = element_text(size = 7),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.text = element_text(size = 8, face = "bold"),
+        legend.position = "right"
+      )
+
+    print(p4_5_pct_heatmap)
+
+    ggsave(
+      path_target("14_driver_contribution_pct_heatmap.png"),
+      p4_5_pct_heatmap,
+      width = 12, height = 10, dpi = 300
+    )
+  } else {
+    cat("百分比热图数据为空，跳过\n")
+  }
+} else {
+  cat("driver_summary不可用或缺少contribution_pct列，跳过百分比热图\n")
+}
+```
+
+```{r}
+#| label: key-species-profile
+#| fig-width: 14
+#| fig-height: 8
+
+# ------------------------------------------------------------------------------
+# 关键物种档案：展示Top驱动物种在所有通路中的贡献
+# ------------------------------------------------------------------------------
+
+if (exists("driver_comparison") && nrow(driver_comparison) > 0 && nrow(driver_summary) > 0 &&
+    "diff_abundance" %in% colnames(driver_comparison)) {
+  # 识别关键驱动物种（在多个通路中贡献变化大的物种）
+  key_species <- driver_comparison |>
+    dplyr::group_by(species) |>
+    dplyr::summarise(
+      n_pathways = n(),
+      total_diff = sum(abs(diff_abundance)),
+      mean_diff = mean(diff_abundance),
+      .groups = "drop"
+    ) |>
+    dplyr::slice_max(order_by = total_diff, n = 8) |>
+    dplyr::pull(species)
+
+  # 筛选关键物种数据
+  key_species_data <- driver_summary |>
+    dplyr::filter(species %in% key_species) |>
+    dplyr::mutate(
+      species_short = stringr::str_replace(species, ".*s__", ""),
+      pathway_short = stringr::str_trunc(pathway, 40)
+    )
+
+  cat("关键物种数据行数:", nrow(key_species_data), "\n")
+
+  if (nrow(key_species_data) > 0 && length(unique(key_species_data$species_short)) > 0) {
+    # 关键物种条形图
+    p4_6_key_species <- ggplot(
+      key_species_data,
+      aes(x = pathway_short, y = mean_abundance, fill = treatment_group)
+    ) +
+      geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
+      facet_wrap(~ species_short, scales = "free", ncol = 2) +
+      scale_fill_manual(
+        values = c("ApcMUT_HpWT" = "#D73027", "ApcMUT_HpKO" = "#4575B4"),
+        name = "Treatment"
+      ) +
+      labs(
+        title = "Key Driver Species: Contribution Profiles Across Pathways",
+        subtitle = "Top 8 species with largest total contribution differences",
+        x = "Pathway",
+        y = "Mean Abundance (CPM)"
+      ) +
+      theme_bw() +
+      theme(
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
+        strip.text = element_text(size = 9, face = "bold"),
+        legend.position = "top"
+      )
+
+    print(p4_6_key_species)
+
+    ggsave(
+      path_target("15_key_driver_species_profile.png"),
+      p4_6_key_species,
+      width = 14, height = 8, dpi = 300
+    )
+  } else {
+    cat("关键物种数据为空，跳过\n")
+  }
+} else {
+  cat("数据不可用，跳过关键物种档案图\n")
+}
+```
+
+### 4.7 驱动物种分析小结
+
+```{r}
+#| label: driver-summary
+
+cat("========================================\n")
+cat("   驱动物种分析结果汇总\n")
+cat("========================================\n\n")
+
+cat("【分析范围】\n")
+cat("- 分析通路数:", n_top_pathways, "\n")
+cat("- 涉及物种数:", length(unique(driver_summary$species)), "\n\n")
+
+cat("【主要发现】\n")
+if (exists("driver_comparison") && nrow(driver_comparison) > 0 &&
+    "diff_abundance" %in% colnames(driver_comparison)) {
+  # 找出贡献变化最大的物种-通路组合
+  top_changes <- driver_comparison |>
+    dplyr::slice_max(order_by = abs(diff_abundance), n = 3)
+
+  cat("贡献变化最大的物种-通路组合:\n")
+  for (i in 1:min(3, nrow(top_changes))) {
+    species_name <- stringr::str_replace(top_changes$species[i], ".*s__", "")
+    pathway_name <- stringr::str_trunc(top_changes$pathway[i], 40)
+    diff <- round(top_changes$diff_abundance[i], 2)
+    direction <- ifelse(diff > 0, "在HpWT中增加", "在HpWT中减少")
+    cat("  ", i, ". ", species_name, "\n",
+        "     通路: ", pathway_name, "\n",
+        "     变化: ", direction, " (Δ=", diff, ")\n\n", sep = "")
+  }
+} else {
+  cat("差异数据不完整，无法展示主要发现\n")
+}
+
+cat("【生物学解读】\n")
+cat("驱动物种分析揭示了功能变化的微生物学基础：\n")
+cat("1. 如果同一通路由不同物种主导 → 功能替代/补偿\n")
+cat("2. 如果特定物种在多个通路中贡献变化 → 关键驱动物种\n")
+cat("3. 结合01文档的物种差异结果 → 验证因果关系\n")
+```
+
+
+# Part 5: 基因家族(KO)差异分析
+
+根据HUMAnN4分析协议：当通路水平分析未发现显著差异时，应转向更精细的基因家族(KO)水平分析。通路由多个基因组成，整体变化可能不明显，但关键限速酶或毒力基因可能显示显著差异。
+
+## 5.1 导入KO基因家族数据
+
+```{r}
+#| label: load-ko-data
+
+# ------------------------------------------------------------------------------
+# 导入KO基因家族数据（unstratified用于差异分析）
+# ------------------------------------------------------------------------------
+
+ko_unstratified_file <- here::here(
+  "data/00-raw/d02_functional_profiling/humann4",
+  "humann4_genefamilies-step3-KO_unstratified.tsv"
+)
+
+ko_unstratified <- read.delim(ko_unstratified_file, header = TRUE, sep = "\t")
+
+cat("=== KO基因家族数据概览 ===\n")
+cat("文件:", basename(ko_unstratified_file), "\n")
+cat("KO数量:", nrow(ko_unstratified), "\n")
+cat("样本数:", ncol(ko_unstratified) - 1, "\n")
+
+# 查看前几行
+head(ko_unstratified[, 1:5], 3)
+```
+
+```{r}
+#| label: create-ko-tse
+
+# ------------------------------------------------------------------------------
+# 创建KO的TreeSummarizedExperiment对象
+# ------------------------------------------------------------------------------
+
+# 获取第一列名称（KO ID列）
+ko_id_col <- colnames(ko_unstratified)[1]
+
+# 设置行名
+ko_matrix <- ko_unstratified
+rownames(ko_matrix) <- ko_matrix[[ko_id_col]]
+ko_matrix <- ko_matrix[, -1]  # 移除ID列
+
+# 清理列名（移除_Abundance后缀）
+colnames(ko_matrix) <- gsub("_Abundance$", "", colnames(ko_matrix))
+
+# 转换为数值矩阵
+ko_matrix <- as.matrix(ko_matrix)
+mode(ko_matrix) <- "numeric"
+
+cat("KO矩阵维度:", dim(ko_matrix), "\n")
+cat("样本名示例:", paste(head(colnames(ko_matrix), 3), collapse = ", "), "\n")
+
+# 移除UNMAPPED和UNGROUPED
+ko_to_remove <- c("UNMAPPED", "UNGROUPED")
+ko_matrix_filtered <- ko_matrix[!rownames(ko_matrix) %in% ko_to_remove, ]
+
+cat("移除UNMAPPED/UNGROUPED后KO数:", nrow(ko_matrix_filtered), "\n")
+
+# 移除全零行
+ko_row_sums <- rowSums(ko_matrix_filtered)
+ko_matrix_filtered <- ko_matrix_filtered[ko_row_sums > 0, ]
+
+cat("移除全零行后KO数:", nrow(ko_matrix_filtered), "\n")
+```
+
+```{r}
+#| label: create-ko-tse-object
+
+# ------------------------------------------------------------------------------
+# 创建TSE对象
+# ------------------------------------------------------------------------------
+
+# 加载元数据（与Part 1一致，从已保存的TSE中读取）
+# 这确保了treatment_group等处理后的列存在
+tse_species_for_ko <- readRDS(
+  here::here("data", "01_alpha_beta_diversity_analysis", "tse_standard_species_ca_cleaned.rds")
+)
+sample_metadata_ko <- as.data.frame(colData(tse_species_for_ko))
+sample_metadata_ko$sample_id <- rownames(sample_metadata_ko)
+
+cat("元数据维度:", nrow(sample_metadata_ko), "x", ncol(sample_metadata_ko), "\n")
+cat("元数据列名:", paste(head(colnames(sample_metadata_ko), 10), collapse = ", "), "...\n")
+
+# 筛选样本元数据
+ko_samples <- colnames(ko_matrix_filtered)
+
+cat("KO数据样本数:", length(ko_samples), "\n")
+cat("元数据样本数:", nrow(sample_metadata_ko), "\n")
+
+# 找到共同样本
+common_ko_samples <- base::intersect(ko_samples, sample_metadata_ko$sample_id)
+cat("共同样本数:", length(common_ko_samples), "\n")
+
+# 更新KO矩阵只保留共同样本
+ko_matrix_filtered <- ko_matrix_filtered[, common_ko_samples, drop = FALSE]
+
+# 筛选元数据
+ko_sample_data <- sample_metadata_ko |>
+  dplyr::filter(sample_id %in% common_ko_samples) |>
+  dplyr::distinct(sample_id, .keep_all = TRUE)  # 去重
+
+# 确保顺序一致
+ko_sample_data <- ko_sample_data[match(common_ko_samples, ko_sample_data$sample_id), ]
+rownames(ko_sample_data) <- ko_sample_data$sample_id
+
+cat("最终样本数:", nrow(ko_sample_data), "\n")
+
+# 创建行数据（KO注释）
+ko_row_data <- data.frame(
+  ko_id = rownames(ko_matrix_filtered),
+  row.names = rownames(ko_matrix_filtered)
+)
+
+# 创建TSE
+tse_ko <- TreeSummarizedExperiment(
+  assays = list(counts = ko_matrix_filtered),
+  colData = DataFrame(ko_sample_data),
+  rowData = DataFrame(ko_row_data)
+)
+
+cat("=== KO TSE对象创建完成 ===\n")
+cat("KO数量:", nrow(tse_ko), "\n")
+cat("样本数:", ncol(tse_ko), "\n")
+print(table(colData(tse_ko)$treatment_group))
+```
+
+## 5.2 KO数据标准化
+
+```{r}
+#| label: normalize-ko
+
+# ------------------------------------------------------------------------------
+# CPM标准化（与Pathway分析一致）
+# ------------------------------------------------------------------------------
+
+# 计算CPM
+ko_counts <- assay(tse_ko, "counts")
+ko_lib_sizes <- colSums(ko_counts)
+ko_cpm <- sweep(ko_counts, 2, ko_lib_sizes, "/") * 1e6
+
+# 添加CPM assay
+assay(tse_ko, "cpm") <- ko_cpm
+
+cat("=== CPM标准化完成 ===\n")
+cat("CPM范围:", round(min(ko_cpm), 2), "-", round(max(ko_cpm), 2), "\n")
+cat("CPM中位数:", round(median(ko_cpm), 2), "\n")
+
+# 保存完整TSE
+saveRDS(tse_ko, path_target("tse_humann_ko.rds"))
+```
+
+## 5.3 筛选核心比较组样本
+
+```{r}
+#| label: filter-ko-corepair
+
+# ------------------------------------------------------------------------------
+# 筛选核心比较组：ApcMUT_HpWT vs ApcMUT_HpKO
+# ------------------------------------------------------------------------------
+
+tse_ko_corepair <- tse_ko[, tse_ko$treatment_group %in% c("ApcMUT_HpWT", "ApcMUT_HpKO")]
+
+cat("=== 核心比较组筛选 ===\n")
+cat("筛选后样本数:", ncol(tse_ko_corepair), "\n")
+print(table(colData(tse_ko_corepair)$treatment_group))
+
+# 移除低丰度KO（至少在20%样本中检测到）
+ko_prevalence <- rowSums(assay(tse_ko_corepair, "counts") > 0) / ncol(tse_ko_corepair)
+ko_prevalent <- ko_prevalence >= 0.2
+
+tse_ko_corepair <- tse_ko_corepair[ko_prevalent, ]
+
+cat("\n筛选后KO数（prevalence >= 20%）:", nrow(tse_ko_corepair), "\n")
+```
+
+## 5.4 MaAsLin2差异分析
+
+```{r}
+#| label: maaslin2-ko
+#| message: false
+#| warning: false
+
+# ------------------------------------------------------------------------------
+# MaAsLin2差异分析 - KO水平
+# 使用CPM数据，LOG转换，与Pathway分析一致
+# ------------------------------------------------------------------------------
+
+
+
+# 准备输入数据
+ko_cpm_corepair <- as.data.frame(t(assay(tse_ko_corepair, "cpm")))
+ko_metadata_corepair <- as.data.frame(colData(tse_ko_corepair))
+
+# 设置参考组
+ko_metadata_corepair$treatment_group <- factor(
+  ko_metadata_corepair$treatment_group,
+  levels = c("ApcMUT_HpKO", "ApcMUT_HpWT")  # HpKO为参考组
+)
+
+# 输出目录
+maaslin2_ko_output <- path_target("maaslin2_ko_results")
+
+cat("=== MaAsLin2 KO分析开始 ===\n")
+cat("输入KO数:", ncol(ko_cpm_corepair), "\n")
+cat("输入样本数:", nrow(ko_cpm_corepair), "\n")
+
+# 运行MaAsLin2
+maaslin2_ko_fit <- Maaslin2(
+  input_data = ko_cpm_corepair,
+  input_metadata = ko_metadata_corepair,
+  output = maaslin2_ko_output,
+  fixed_effects = c("treatment_group"),
+  reference = c("treatment_group,ApcMUT_HpKO"),
+  normalization = "NONE",  # 已经是CPM
+  transform = "LOG",
+  analysis_method = "LM",
+  max_significance = 0.25,
+  min_abundance = 0,
+  min_prevalence = 0,
+  plot_heatmap = FALSE,
+  plot_scatter = FALSE,
+  cores = 1
+)
+
+cat("=== MaAsLin2 KO分析完成 ===\n")
+```
+
+```{r}
+#| label: maaslin2-ko-results
+
+# ------------------------------------------------------------------------------
+# 汇总MaAsLin2 KO分析结果
+# ------------------------------------------------------------------------------
+
+# 读取结果
+ko_results_file <- file.path(maaslin2_ko_output, "all_results.tsv")
+ko_maaslin2_results <- read.delim(ko_results_file, header = TRUE)
+
+cat("=== MaAsLin2 KO结果汇总 ===\n")
+cat("总检测KO数:", nrow(ko_maaslin2_results), "\n")
+
+# 统计显著性
+ko_sig_005 <- sum(ko_maaslin2_results$qval < 0.05, na.rm = TRUE)
+ko_sig_010 <- sum(ko_maaslin2_results$qval < 0.10, na.rm = TRUE)
+ko_sig_025 <- sum(ko_maaslin2_results$qval < 0.25, na.rm = TRUE)
+
+cat("\n显著KO数量:\n")
+cat("  q < 0.05:", ko_sig_005, "\n")
+cat("  q < 0.10:", ko_sig_010, "\n")
+cat("  q < 0.25:", ko_sig_025, "\n")
+
+# 按方向统计
+if (ko_sig_025 > 0) {
+  ko_sig_results <- ko_maaslin2_results |>
+    dplyr::filter(qval < 0.25)
+
+  ko_up_in_hpwt <- sum(ko_sig_results$coef > 0, na.rm = TRUE)
+  ko_down_in_hpwt <- sum(ko_sig_results$coef < 0, na.rm = TRUE)
+
+  cat("\n差异方向 (q < 0.25):\n")
+  cat("  在HpWT中升高:", ko_up_in_hpwt, "\n")
+  cat("  在HpWT中降低:", ko_down_in_hpwt, "\n")
+}
+
+# 显示Top结果
+cat("\n=== Top 15 差异KO (按q值排序) ===\n")
+ko_top_results <- ko_maaslin2_results |>
+  dplyr::arrange(qval) |>
+  head(15) |>
+  dplyr::select(feature, coef, stderr, pval, qval)
+
+print(ko_top_results)
+```
+
+## 5.5 KO差异结果可视化
+
+```{r}
+#| label: ko-volcano-plot
+#| fig-width: 10
+#| fig-height: 8
+
+# ------------------------------------------------------------------------------
+# 火山图：KO差异分析结果
+# ------------------------------------------------------------------------------
+
+# 准备火山图数据
+ko_volcano_data <- ko_maaslin2_results |>
+  dplyr::mutate(
+    log10_qval = -log10(qval),
+    significance = dplyr::case_when(
+      qval < 0.05 ~ "q < 0.05",
+      qval < 0.10 ~ "q < 0.10",
+      qval < 0.25 ~ "q < 0.25",
+      TRUE ~ "Not significant"
+    ),
+    significance = factor(significance, levels = c("q < 0.05", "q < 0.10", "q < 0.25", "Not significant"))
+  )
+
+# 标记Top KO
+ko_to_label <- ko_volcano_data |>
+  dplyr::filter(qval < 0.25) |>
+  dplyr::slice_min(order_by = qval, n = 15)
+
+# 火山图
+p5_1_ko_volcano <- ggplot(ko_volcano_data, aes(x = coef, y = log10_qval)) +
+  geom_point(aes(color = significance), alpha = 0.6, size = 1.5) +
+  geom_hline(yintercept = -log10(0.25), linetype = "dashed", color = "grey50") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red", alpha = 0.5) +
+  geom_vline(xintercept = 0, linetype = "solid", color = "grey30") +
+  scale_color_manual(
+    values = c("q < 0.05" = "#E41A1C", "q < 0.10" = "#FF7F00",
+               "q < 0.25" = "#4DAF4A", "Not significant" = "grey70"),
+    name = "Significance"
+  ) +
+  labs(
+    title = "KO Gene Family Differential Abundance (MaAsLin2)",
+    subtitle = "ApcMUT_HpWT vs ApcMUT_HpKO | Positive coef = higher in HpWT",
+    x = "Coefficient (Effect Size)",
+    y = "-log10(q-value)"
+  ) +
+  theme_bw() +
+  theme(legend.position = "right")
+
+# 添加标签
+if (nrow(ko_to_label) > 0) {
+  p5_1_ko_volcano <- p5_1_ko_volcano +
+    ggrepel::geom_text_repel(
+      data = ko_to_label,
+      aes(label = feature),
+      size = 2.5,
+      max.overlaps = 20,
+      box.padding = 0.3
+    )
+}
+
+print(p5_1_ko_volcano)
+
+ggsave(
+  path_target("16_ko_volcano_plot.png"),
+  p5_1_ko_volcano,
+  width = 10, height = 8, dpi = 300
+)
+```
+
+```{r}
+#| label: ko-barplot
+#| fig-width: 12
+#| fig-height: 10
+
+# ------------------------------------------------------------------------------
+# 条形图：显著差异KO
+# ------------------------------------------------------------------------------
+
+# 筛选显著KO（使用更宽松阈值以确保有数据）
+ko_sig_threshold <- ifelse(ko_sig_005 >= 10, 0.05,
+                           ifelse(ko_sig_010 >= 10, 0.10, 0.25))
+
+ko_sig_for_plot <- ko_maaslin2_results |>
+  dplyr::filter(qval < ko_sig_threshold) |>
+  dplyr::arrange(coef) |>
+  dplyr::mutate(
+    direction = ifelse(coef > 0, "Higher in HpWT", "Higher in HpKO"),
+    ko_short = stringr::str_trunc(feature, 30)
+  )
+
+cat("条形图使用阈值 q <", ko_sig_threshold, "\n")
+cat("显著KO数:", nrow(ko_sig_for_plot), "\n")
+
+if (nrow(ko_sig_for_plot) > 0) {
+  # 限制显示数量
+  if (nrow(ko_sig_for_plot) > 40) {
+    ko_sig_for_plot <- ko_sig_for_plot |>
+      dplyr::slice_max(order_by = abs(coef), n = 40)
+  }
+
+  p5_2_ko_bar <- ggplot(
+    ko_sig_for_plot,
+    aes(x = reorder(ko_short, coef), y = coef, fill = direction)
+  ) +
+    geom_bar(stat = "identity", width = 0.7) +
+    geom_hline(yintercept = 0, color = "black") +
+    coord_flip() +
+    scale_fill_manual(
+      values = c("Higher in HpWT" = "#D73027", "Higher in HpKO" = "#4575B4"),
+      name = "Direction"
+    ) +
+    labs(
+      title = paste0("Significantly Differential KOs (q < ", ko_sig_threshold, ")"),
+      subtitle = "MaAsLin2 analysis | ApcMUT_HpWT vs ApcMUT_HpKO",
+      x = "KO Gene Family",
+      y = "Coefficient (Effect Size)"
+    ) +
+    theme_bw() +
+    theme(
+      axis.text.y = element_text(size = 8),
+      legend.position = "top"
+    )
+
+  print(p5_2_ko_bar)
+
+  ggsave(
+    path_target("17_ko_differential_barplot.png"),
+    p5_2_ko_bar,
+    width = 12, height = 10, dpi = 300
+  )
+} else {
+  cat("没有显著差异的KO，跳过条形图\n")
+}
+```
+
+```{r}
+#| label: ko-heatmap
+#| fig-width: 14
+#| fig-height: 10
+
+# ------------------------------------------------------------------------------
+# 热图：Top差异KO的丰度模式
+# ------------------------------------------------------------------------------
+
+# 获取Top 30差异KO
+ko_top30 <- ko_maaslin2_results |>
+  dplyr::arrange(qval) |>
+  head(30) |>
+  dplyr::pull(feature)
+
+if (length(ko_top30) > 0) {
+  # 提取CPM数据
+  ko_heatmap_matrix <- assay(tse_ko_corepair, "cpm")[ko_top30, , drop = FALSE]
+
+  # Log转换
+  ko_heatmap_matrix <- log10(ko_heatmap_matrix + 1)
+
+  # Z-score标准化（按行）
+  ko_heatmap_scaled <- t(scale(t(ko_heatmap_matrix)))
+
+  # 准备注释
+  ko_sample_anno <- data.frame(
+    Treatment = colData(tse_ko_corepair)$treatment_group,
+    row.names = colnames(ko_heatmap_scaled)
+  )
+
+  # 注释颜色
+  ko_anno_colors <- list(
+    Treatment = c("ApcMUT_HpWT" = "#D73027", "ApcMUT_HpKO" = "#4575B4")
+  )
+
+  # 绘制热图
+  p5_3_ko_heatmap <- pheatmap::pheatmap(
+    ko_heatmap_scaled,
+    annotation_col = ko_sample_anno,
+    annotation_colors = ko_anno_colors,
+    cluster_rows = TRUE,
+    cluster_cols = TRUE,
+    show_rownames = TRUE,
+    show_colnames = TRUE,
+    fontsize_row = 7,
+    fontsize_col = 8,
+    color = colorRampPalette(c("#4575B4", "white", "#D73027"))(100),
+    main = "Top 30 Differential KOs - Expression Heatmap\n(Z-score normalized log10 CPM)",
+    silent = TRUE
+  )
+
+  print(p5_3_ko_heatmap)
+
+  png(path_target("18_ko_heatmap.png"), width = 14, height = 10, units = "in", res = 300)
+  print(p5_3_ko_heatmap)
+  dev.off()
+} else {
+  cat("没有足够的KO数据，跳过热图\n")
+}
+```
+
+## 5.6 KO功能注释与富集
+
+```{r}
+#| label: ko-annotation
+
+# ------------------------------------------------------------------------------
+# KO功能注释
+# 将显著KO映射到KEGG通路和功能描述
+# ------------------------------------------------------------------------------
+
+# 获取显著KO列表
+ko_sig_list <- ko_maaslin2_results |>
+  dplyr::filter(qval < 0.25) |>
+  dplyr::arrange(qval)
+
+cat("=== 显著差异KO列表 (q < 0.25) ===\n")
+cat("总数:", nrow(ko_sig_list), "\n\n")
+
+if (nrow(ko_sig_list) > 0) {
+  # 显示详细信息
+  ko_sig_display <- ko_sig_list |>
+    dplyr::mutate(
+      direction = ifelse(coef > 0, "↑ HpWT", "↑ HpKO"),
+      effect = round(coef, 3),
+      q_value = format(qval, digits = 3, scientific = TRUE)
+    ) |>
+    dplyr::select(feature, direction, effect, q_value)
+
+  print(ko_sig_display)
+
+  # 保存显著KO列表
+  write.csv(
+    ko_sig_list,
+    file = path_target("19_significant_KOs.csv"),
+    row.names = FALSE
+  )
+
+  cat("\n✓ 显著KO列表已保存\n")
+} else {
+  cat("未发现显著差异的KO (q < 0.25)\n")
+}
+```
+
+```{r}
+#| label: ko-summary-stats
+
+# ------------------------------------------------------------------------------
+# KO分析统计汇总
+# ------------------------------------------------------------------------------
+
+cat("========================================\n")
+cat("   Part 5: KO基因家族分析结果汇总\n")
+cat("========================================\n\n")
+
+cat("【数据概览】\n")
+cat("- 输入KO总数:", nrow(ko_unstratified), "\n")
+cat("- 过滤后KO数:", nrow(tse_ko_corepair), "\n")
+cat("- 分析样本数:", ncol(tse_ko_corepair), "\n\n")
+
+cat("【差异分析结果】\n")
+cat("- 显著KO (q < 0.05):", ko_sig_005, "\n")
+cat("- 显著KO (q < 0.10):", ko_sig_010, "\n")
+cat("- 显著KO (q < 0.25):", ko_sig_025, "\n\n")
+
+if (ko_sig_025 > 0) {
+  cat("【Top 5 差异KO】\n")
+  top5_ko <- ko_maaslin2_results |>
+    dplyr::arrange(qval) |>
+    head(5)
+
+  for (i in 1:nrow(top5_ko)) {
+    direction <- ifelse(top5_ko$coef[i] > 0, "在HpWT中升高", "在HpWT中降低")
+    cat(i, ". ", top5_ko$feature[i], "\n",
+        "   ", direction, " (coef=", round(top5_ko$coef[i], 3),
+        ", q=", format(top5_ko$qval[i], digits = 2), ")\n", sep = "")
+  }
+}
+
+cat("\n【生物学意义】\n")
+cat("KO水平分析比通路分析更精细，能够发现：\n")
+cat("1. 关键限速酶的差异表达\n")
+cat("2. 毒力因子相关基因的变化\n")
+cat("3. 特定代谢功能的微生物差异\n")
+```
+
+
+# Part 6: 物种-功能整合分析 (Taxa-Function Integration)
+
+虽然通路和KO水平的组间差异分析未发现显著结果，但我们可以通过**物种-功能关联分析**来探索：
+- 哪些物种与哪些功能（KO）强相关？
+- 如果01分析发现的差异物种与特定功能相关，这仍然具有生物学意义
+
+这种分析方法来自OMA (Orchestrating Microbiome Analysis) 框架，使用 `getCrossAssociation()` 函数。
+
+## 6.1 加载物种数据
+
+```{r}
+#| label: load-taxa-data
+
+# ------------------------------------------------------------------------------
+# 加载01分析的物种数据
+# ------------------------------------------------------------------------------
+
+# 加载物种TSE
+tse_species_full <- readRDS(
+  here::here("data", "01_alpha_beta_diversity_analysis", "tse_standard_species_ca_cleaned.rds")
+)
+
+cat("=== 物种数据概览 ===\n")
+cat("物种数:", nrow(tse_species_full), "\n")
+cat("样本数:", ncol(tse_species_full), "\n")
+
+# 筛选核心比较组样本
+tse_species_corepair <- tse_species_full[, tse_species_full$treatment_group %in% c("ApcMUT_HpWT", "ApcMUT_HpKO")]
+
+cat("\n筛选核心比较组后:\n")
+cat("样本数:", ncol(tse_species_corepair), "\n")
+print(table(colData(tse_species_corepair)$treatment_group))
+```
+
+```{r}
+#| label: prepare-taxa-for-correlation
+
+# ------------------------------------------------------------------------------
+# 准备物种数据用于关联分析
+# ------------------------------------------------------------------------------
+
+# 计算相对丰度（如果还没有）
+if (!"relabundance" %in% assayNames(tse_species_corepair)) {
+  tse_species_corepair <- mia::transformAssay(
+    tse_species_corepair,
+    assay.type = "counts",
+    method = "relabundance"
+  )
+}
+
+cat("=== 物种筛选 ===\n")
+cat("原始物种数:", nrow(tse_species_corepair), "\n")
+
+# Step 1: Prevalence过滤（至少在10%样本中检测到）
+species_prevalence <- rowSums(assay(tse_species_corepair, "counts") > 0) / ncol(tse_species_corepair)
+species_pass_prev <- species_prevalence >= 0.1  # 10% prevalence
+
+cat("通过prevalence过滤 (>=10%):", sum(species_pass_prev), "\n")
+
+# Step 2: 丰度过滤（平均相对丰度 > 0.1%）
+species_mean_abund <- rowMeans(assay(tse_species_corepair, "relabundance"))
+species_pass_abund <- species_mean_abund > 0.001  # 0.1%
+
+cat("通过丰度过滤 (>0.1%):", sum(species_pass_abund), "\n")
+
+# 同时满足两个条件
+species_pass_both <- species_pass_prev & species_pass_abund
+
+tse_species_filtered <- tse_species_corepair[species_pass_both, ]
+
+cat("同时通过两个过滤:", nrow(tse_species_filtered), "\n")
+
+# 显示保留的物种
+cat("\n保留的物种:\n")
+print(head(rownames(tse_species_filtered), 20))
+```
+
+## 6.2 准备KO数据
+
+```{r}
+#| label: prepare-ko-for-correlation
+
+# ------------------------------------------------------------------------------
+# 准备KO数据用于关联分析
+# ------------------------------------------------------------------------------
+
+# 确保KO TSE存在
+if (!exists("tse_ko_corepair")) {
+  cat("错误: tse_ko_corepair不存在，请先运行Part 5\n")
+} else {
+  cat("=== KO数据筛选 ===\n")
+  cat("原始KO数:", nrow(tse_ko_corepair), "\n")
+  cat("样本数:", ncol(tse_ko_corepair), "\n")
+
+  # Step 1: Prevalence过滤（至少在10%样本中检测到）
+  ko_prevalence <- rowSums(assay(tse_ko_corepair, "counts") > 0) / ncol(tse_ko_corepair)
+  ko_pass_prev <- ko_prevalence >= 0.1  # 10% prevalence
+
+  cat("\n通过prevalence过滤 (>=10%):", sum(ko_pass_prev), "\n")
+
+  # Step 2: 丰度过滤（平均CPM > 10）
+  ko_mean_cpm <- rowMeans(assay(tse_ko_corepair, "cpm"))
+  ko_pass_abund <- ko_mean_cpm > 10
+
+  cat("通过丰度过滤 (CPM>10):", sum(ko_pass_abund), "\n")
+
+  # 同时满足两个条件
+  ko_pass_both <- ko_pass_prev & ko_pass_abund
+
+  tse_ko_filtered <- tse_ko_corepair[ko_pass_both, ]
+
+  cat("同时通过两个过滤:", nrow(tse_ko_filtered), "\n")
+}
+```
+
+## 6.3 样本对齐
+
+```{r}
+#| label: align-samples
+
+# ------------------------------------------------------------------------------
+# 确保物种和KO数据的样本一致
+# ------------------------------------------------------------------------------
+
+# 获取共同样本
+taxa_samples <- colnames(tse_species_filtered)
+ko_samples <- colnames(tse_ko_filtered)
+
+common_samples <- base::intersect(taxa_samples, ko_samples)
+
+cat("=== 样本对齐 ===\n")
+cat("物种数据样本数:", length(taxa_samples), "\n")
+cat("KO数据样本数:", length(ko_samples), "\n")
+cat("共同样本数:", length(common_samples), "\n")
+
+# 子集化
+tse_species_aligned <- tse_species_filtered[, common_samples]
+tse_ko_aligned <- tse_ko_filtered[, common_samples]
+
+cat("\n对齐后:\n")
+cat("物种TSE:", nrow(tse_species_aligned), "物种 x", ncol(tse_species_aligned), "样本\n")
+cat("KO TSE:", nrow(tse_ko_aligned), "KO x", ncol(tse_ko_aligned), "样本\n")
+```
+
+## 6.4 计算物种-KO关联
+
+```{r}
+#| label: calculate-cross-association
+#| message: false
+#| warning: false
+
+# ------------------------------------------------------------------------------
+# 使用getCrossAssociation计算物种-KO相关性
+# 方法：Spearman相关（适合非正态分布的微生物数据）
+# ------------------------------------------------------------------------------
+
+
+# 进一步筛选以减少计算量（取Top物种和Top KO）
+n_top_species <- min(30, nrow(tse_species_aligned))
+n_top_ko <- min(50, nrow(tse_ko_aligned))
+
+# 选择丰度最高的物种
+species_abundance_order <- order(rowMeans(assay(tse_species_aligned, "relabundance")), decreasing = TRUE)
+top_species_idx <- species_abundance_order[1:n_top_species]
+
+# 选择丰度最高的KO
+ko_abundance_order <- order(rowMeans(assay(tse_ko_aligned, "cpm")), decreasing = TRUE)
+top_ko_idx <- ko_abundance_order[1:n_top_ko]
+
+# 子集化
+tse_species_top <- tse_species_aligned[top_species_idx, ]
+tse_ko_top <- tse_ko_aligned[top_ko_idx, ]
+
+cat("=== 关联分析输入 ===\n")
+cat("Top物种数:", nrow(tse_species_top), "\n")
+cat("Top KO数:", nrow(tse_ko_top), "\n")
+
+# 准备矩阵用于相关性计算
+species_matrix <- t(assay(tse_species_top, "relabundance"))
+ko_matrix_for_cor <- t(assay(tse_ko_top, "cpm"))
+
+# 对KO数据做log转换
+ko_matrix_for_cor <- log10(ko_matrix_for_cor + 1)
+
+cat("\n计算Spearman相关性...\n")
+
+# 计算相关性矩阵
+cor_matrix <- cor(species_matrix, ko_matrix_for_cor, method = "spearman")
+
+cat("相关性矩阵维度:", dim(cor_matrix), "\n")
+cat("相关性范围:", round(min(cor_matrix, na.rm = TRUE), 3), "to",
+    round(max(cor_matrix, na.rm = TRUE), 3), "\n")
+```
+
+```{r}
+#| label: calculate-correlation-pvalues
+
+# ------------------------------------------------------------------------------
+# 计算相关性的p值
+# ------------------------------------------------------------------------------
+
+# 初始化p值矩阵
+pval_matrix <- matrix(NA, nrow = ncol(species_matrix), ncol = ncol(ko_matrix_for_cor))
+rownames(pval_matrix) <- colnames(species_matrix)
+colnames(pval_matrix) <- colnames(ko_matrix_for_cor)
+
+# 计算每对的p值
+for (i in 1:ncol(species_matrix)) {
+  for (j in 1:ncol(ko_matrix_for_cor)) {
+    test_result <- cor.test(species_matrix[, i], ko_matrix_for_cor[, j],
+                           method = "spearman", exact = FALSE)
+    pval_matrix[i, j] <- test_result$p.value
+  }
+}
+
+# FDR校正
+pval_adjusted <- matrix(p.adjust(as.vector(pval_matrix), method = "BH"),
+                        nrow = nrow(pval_matrix), ncol = ncol(pval_matrix))
+rownames(pval_adjusted) <- rownames(pval_matrix)
+colnames(pval_adjusted) <- colnames(pval_matrix)
+
+# 统计显著关联数
+n_sig_005 <- sum(pval_adjusted < 0.05, na.rm = TRUE)
+n_sig_010 <- sum(pval_adjusted < 0.10, na.rm = TRUE)
+n_sig_025 <- sum(pval_adjusted < 0.25, na.rm = TRUE)
+
+cat("=== 显著关联统计 ===\n")
+cat("总测试数:", length(pval_adjusted), "\n")
+cat("显著关联数 (FDR < 0.05):", n_sig_005, "\n")
+cat("显著关联数 (FDR < 0.10):", n_sig_010, "\n")
+cat("显著关联数 (FDR < 0.25):", n_sig_025, "\n")
+```
+
+## 6.5 物种-功能关联热图
+
+```{r}
+#| label: taxa-ko-heatmap
+#| fig-width: 14
+#| fig-height: 12
+
+# ------------------------------------------------------------------------------
+# 热图：物种-KO相关性
+# ------------------------------------------------------------------------------
+
+# 筛选有显著关联的物种和KO
+sig_threshold <- 0.25  # 使用宽松阈值确保有数据
+
+# 找出至少有一个显著关联的物种和KO
+species_with_sig <- rowSums(pval_adjusted < sig_threshold, na.rm = TRUE) > 0
+ko_with_sig <- colSums(pval_adjusted < sig_threshold, na.rm = TRUE) > 0
+
+cat("有显著关联的物种数:", sum(species_with_sig), "\n")
+cat("有显著关联的KO数:", sum(ko_with_sig), "\n")
+
+if (sum(species_with_sig) > 0 && sum(ko_with_sig) > 0) {
+  # 筛选相关性矩阵
+  cor_matrix_sig <- cor_matrix[species_with_sig, ko_with_sig, drop = FALSE]
+  pval_matrix_sig <- pval_adjusted[species_with_sig, ko_with_sig, drop = FALSE]
+
+  # 限制显示数量
+  if (nrow(cor_matrix_sig) > 25) {
+    # 选择相关性绝对值最大的物种
+    species_max_cor <- apply(abs(cor_matrix_sig), 1, max, na.rm = TRUE)
+    top_species_idx <- order(species_max_cor, decreasing = TRUE)[1:25]
+    cor_matrix_sig <- cor_matrix_sig[top_species_idx, , drop = FALSE]
+    pval_matrix_sig <- pval_matrix_sig[top_species_idx, , drop = FALSE]
+  }
+
+  if (ncol(cor_matrix_sig) > 30) {
+    # 选择相关性绝对值最大的KO
+    ko_max_cor <- apply(abs(cor_matrix_sig), 2, max, na.rm = TRUE)
+    top_ko_idx <- order(ko_max_cor, decreasing = TRUE)[1:30]
+    cor_matrix_sig <- cor_matrix_sig[, top_ko_idx, drop = FALSE]
+    pval_matrix_sig <- pval_matrix_sig[, top_ko_idx, drop = FALSE]
+  }
+
+  # 简化名称
+  rownames(cor_matrix_sig) <- stringr::str_replace(rownames(cor_matrix_sig), ".*s__", "")
+  rownames(cor_matrix_sig) <- stringr::str_trunc(rownames(cor_matrix_sig), 30)
+  colnames(cor_matrix_sig) <- stringr::str_trunc(colnames(cor_matrix_sig), 20)
+
+  # 创建显著性标记矩阵
+  sig_marks <- ifelse(pval_matrix_sig < 0.05, "**",
+                      ifelse(pval_matrix_sig < 0.10, "*", ""))
+
+  # 绘制热图
+  p6_1_taxa_ko_heatmap <- pheatmap::pheatmap(
+    cor_matrix_sig,
+    color = colorRampPalette(c("#4575B4", "white", "#D73027"))(100),
+    breaks = seq(-1, 1, length.out = 101),
+    cluster_rows = TRUE,
+    cluster_cols = TRUE,
+    show_rownames = TRUE,
+    show_colnames = TRUE,
+    fontsize_row = 8,
+    fontsize_col = 7,
+    angle_col = 45,
+    main = "Taxa-KO Correlation Heatmap\n(Spearman correlation)",
+    display_numbers = sig_marks,
+    number_color = "black",
+    fontsize_number = 6,
+    silent = TRUE
+  )
+
+  print(p6_1_taxa_ko_heatmap)
+
+  png(path_target("20_taxa_ko_correlation_heatmap.png"),
+      width = 14, height = 12, units = "in", res = 300)
+  print(p6_1_taxa_ko_heatmap)
+  dev.off()
+
+  cat("\n** = FDR < 0.05, * = FDR < 0.10\n")
+} else {
+  cat("没有足够的显著关联用于绑图\n")
+
+  # 即使没有显著关联，也显示相关性最强的组合
+  cat("\n显示相关性最强的组合（不考虑显著性）:\n")
+  cor_matrix_display <- cor_matrix[1:min(20, nrow(cor_matrix)),
+                                    1:min(25, ncol(cor_matrix)), drop = FALSE]
+
+  rownames(cor_matrix_display) <- stringr::str_replace(rownames(cor_matrix_display), ".*s__", "")
+  rownames(cor_matrix_display) <- stringr::str_trunc(rownames(cor_matrix_display), 30)
+  colnames(cor_matrix_display) <- stringr::str_trunc(colnames(cor_matrix_display), 20)
+
+  p6_1_taxa_ko_heatmap <- pheatmap::pheatmap(
+    cor_matrix_display,
+    color = colorRampPalette(c("#4575B4", "white", "#D73027"))(100),
+    breaks = seq(-1, 1, length.out = 101),
+    cluster_rows = TRUE,
+    cluster_cols = TRUE,
+    show_rownames = TRUE,
+    show_colnames = TRUE,
+    fontsize_row = 8,
+    fontsize_col = 7,
+    angle_col = 45,
+    main = "Taxa-KO Correlation Heatmap (Top associations)\n(Spearman correlation, for exploratory purpose)",
+    silent = TRUE
+  )
+
+  print(p6_1_taxa_ko_heatmap)
+
+  png(path_target("20_taxa_ko_correlation_heatmap.png"),
+      width = 14, height = 12, units = "in", res = 300)
+  print(p6_1_taxa_ko_heatmap)
+  dev.off()
+}
+```
+
+## 6.6 Top关联物种-KO对
+
+```{r}
+#| label: top-associations
+
+# ------------------------------------------------------------------------------
+# 提取并展示Top关联的物种-KO对
+# ------------------------------------------------------------------------------
+
+# 将相关性矩阵转换为长格式
+cor_long <- reshape2::melt(cor_matrix)
+colnames(cor_long) <- c("Species", "KO", "Correlation")
+
+pval_long <- reshape2::melt(pval_adjusted)
+colnames(pval_long) <- c("Species", "KO", "FDR")
+
+# 合并
+associations <- dplyr::left_join(cor_long, pval_long, by = c("Species", "KO"))
+
+# 添加绝对相关性
+associations$Abs_Correlation <- abs(associations$Correlation)
+
+# 简化物种名
+associations$Species_short <- stringr::str_replace(as.character(associations$Species), ".*s__", "")
+
+# 按绝对相关性排序
+top_associations <- associations |>
+  dplyr::arrange(desc(Abs_Correlation)) |>
+  head(30)
+
+cat("=== Top 30 物种-KO关联 ===\n")
+cat("(按相关性绝对值排序)\n\n")
+
+top_display <- top_associations |>
+  dplyr::mutate(
+    Direction = ifelse(Correlation > 0, "+", "-"),
+    Cor = round(Correlation, 3),
+    FDR_display = format(FDR, digits = 2, scientific = TRUE)
+  ) |>
+  dplyr::select(Species_short, KO, Direction, Cor, FDR_display)
+
+print(as.data.frame(top_display))
+
+# 保存完整关联表
+write.csv(
+  associations |> dplyr::arrange(FDR),
+  file = path_target("21_taxa_ko_associations.csv"),
+  row.names = FALSE
+)
+
+cat("\n✓ 物种-KO关联表已保存\n")
+```
+
+## 6.7 关联网络可视化
+
+```{r}
+#| label: association-network
+#| fig-width: 12
+#| fig-height: 10
+
+# ------------------------------------------------------------------------------
+# 网络图：物种-KO关联
+# 只显示较强的关联 (|r| > 0.5)
+# ------------------------------------------------------------------------------
+
+# 筛选强关联
+strong_associations <- associations |>
+  dplyr::filter(Abs_Correlation > 0.5)
+
+cat("强关联数 (|r| > 0.5):", nrow(strong_associations), "\n")
+
+if (nrow(strong_associations) >= 5) {
+  # 限制数量
+  if (nrow(strong_associations) > 100) {
+    strong_associations <- strong_associations |>
+      dplyr::slice_max(order_by = Abs_Correlation, n = 100)
+  }
+
+  # 准备网络数据
+  network_data <- strong_associations |>
+    dplyr::mutate(
+      from = Species_short,
+      to = as.character(KO),
+      weight = Abs_Correlation,
+      color = ifelse(Correlation > 0, "positive", "negative")
+    ) |>
+    dplyr::select(from, to, weight, color, Correlation, FDR)
+
+  # 创建节点数据
+  species_nodes <- data.frame(
+    name = unique(network_data$from),
+    type = "Species",
+    stringsAsFactors = FALSE
+  )
+
+  ko_nodes <- data.frame(
+    name = unique(network_data$to),
+    type = "KO",
+    stringsAsFactors = FALSE
+  )
+
+  nodes <- rbind(species_nodes, ko_nodes)
+
+  # 使用ggplot2创建网络可视化（简化版）
+  # 将网络数据转换为适合ggplot的格式
+
+  # 创建点图展示强关联
+  p6_2_network <- ggplot(
+    network_data,
+    aes(x = reorder(to, Correlation), y = reorder(from, Correlation))
+  ) +
+    geom_point(aes(size = weight, color = color), alpha = 0.7) +
+    scale_color_manual(
+      values = c("positive" = "#D73027", "negative" = "#4575B4"),
+      name = "Direction"
+    ) +
+    scale_size_continuous(name = "|Correlation|", range = c(2, 8)) +
+    labs(
+      title = "Taxa-KO Strong Associations Network",
+      subtitle = paste0("Showing ", nrow(network_data), " associations with |r| > 0.5"),
+      x = "KO Gene Family",
+      y = "Species"
+    ) +
+    theme_bw() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
+      axis.text.y = element_text(size = 8),
+      legend.position = "right"
+    )
+
+  print(p6_2_network)
+
+  ggsave(
+    path_target("22_taxa_ko_network.png"),
+    p6_2_network,
+    width = 12, height = 10, dpi = 300
+  )
+} else {
+  cat("强关联数不足，使用更宽松的阈值展示...\n")
+
+  # 使用更宽松的阈值
+  moderate_associations <- associations |>
+    dplyr::filter(Abs_Correlation > 0.3) |>
+    dplyr::slice_max(order_by = Abs_Correlation, n = 50)
+
+  if (nrow(moderate_associations) > 0) {
+    p6_2_network <- ggplot(
+      moderate_associations,
+      aes(x = reorder(as.character(KO), Correlation),
+          y = reorder(Species_short, Correlation))
+    ) +
+      geom_point(aes(size = Abs_Correlation,
+                     color = ifelse(Correlation > 0, "positive", "negative")),
+                 alpha = 0.7) +
+      scale_color_manual(
+        values = c("positive" = "#D73027", "negative" = "#4575B4"),
+        name = "Direction"
+      ) +
+      scale_size_continuous(name = "|Correlation|", range = c(2, 8)) +
+      labs(
+        title = "Taxa-KO Associations (|r| > 0.3)",
+        subtitle = "Top 50 associations shown",
+        x = "KO Gene Family",
+        y = "Species"
+      ) +
+      theme_bw() +
+      theme(
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
+        axis.text.y = element_text(size = 8),
+        legend.position = "right"
+      )
+
+    print(p6_2_network)
+
+    ggsave(
+      path_target("22_taxa_ko_network.png"),
+      p6_2_network,
+      width = 12, height = 10, dpi = 300
+    )
+  }
+}
+```
+
+## 6.8 整合01分析的差异物种
+
+```{r}
+#| label: integrate-differential-taxa
+
+# ------------------------------------------------------------------------------
+# 查看01分析中的差异物种与功能的关联
+# ------------------------------------------------------------------------------
+
+# 尝试加载01分析的差异分析结果
+# 使用ANCOM-BC或ALDEx2的物种差异结果
+dir_01 <- here::here("data", "01_alpha_beta_diversity_analysis")
+
+ancombc_file <- file.path(dir_01, "18_daa_ancombc_top10_species.csv")
+aldex2_file <- file.path(dir_01, "20_daa_aldex2_significant_species.csv")
+
+diff_taxa <- NULL
+diff_source <- ""
+
+if (file.exists(ancombc_file)) {
+  diff_taxa <- read.csv(ancombc_file)
+  diff_source <- "ANCOM-BC"
+  cat("=== 加载ANCOM-BC差异物种结果 ===\n")
+} else if (file.exists(aldex2_file)) {
+  diff_taxa <- read.csv(aldex2_file)
+  diff_source <- "ALDEx2"
+  cat("=== 加载ALDEx2差异物种结果 ===\n")
+}
+
+if (!is.null(diff_taxa) && nrow(diff_taxa) > 0) {
+  cat("来源:", diff_source, "\n")
+  cat("差异物种数:", nrow(diff_taxa), "\n\n")
+
+  # 显示列名
+  cat("列名:", paste(colnames(diff_taxa), collapse = ", "), "\n\n")
+  print(head(diff_taxa, 10))
+
+  # 查找taxon列
+  taxon_col <- NULL
+  for (col in c("taxon", "Species", "species", "feature", "X")) {
+    if (col %in% colnames(diff_taxa)) {
+      taxon_col <- col
+      break
+    }
+  }
+
+  if (!is.null(taxon_col)) {
+    diff_species_names <- diff_taxa[[taxon_col]]
+    diff_species_short <- stringr::str_replace(diff_species_names, ".*s__", "")
+
+    cat("\n差异物种 (简化名):\n")
+    print(diff_species_short)
+
+    # 在关联表中查找
+    diff_species_associations <- associations |>
+      dplyr::filter(Species %in% diff_species_names |
+                    Species_short %in% diff_species_short) |>
+      dplyr::arrange(desc(Abs_Correlation))
+
+    if (nrow(diff_species_associations) > 0) {
+      cat("\n=== 差异物种的功能关联 (Top 20) ===\n")
+      print(head(diff_species_associations |>
+        dplyr::select(Species_short, KO, Correlation, FDR), 20))
+
+      # 保存
+      write.csv(diff_species_associations,
+        file = path_target("23_differential_taxa_ko_associations.csv"),
+        row.names = FALSE)
+      cat("\n✓ 差异物种-KO关联已保存\n")
+    } else {
+      cat("\n差异物种未在Top关联分析中找到\n")
+    }
+  }
+} else {
+  cat("未找到01分析的差异物种文件\n")
+}
+```
+
+## 6.9 Part 6 小结
+
+```{r}
+#| label: part6-summary
+
+cat("========================================\n")
+cat("   Part 6: 物种-功能整合分析小结\n")
+cat("========================================\n\n")
+
+cat("【分析概览】\n")
+cat("- 分析物种数:", nrow(tse_species_top), "\n")
+cat("- 分析KO数:", nrow(tse_ko_top), "\n")
+cat("- 总测试关联数:", length(pval_adjusted), "\n\n")
+
+cat("【关联发现】\n")
+cat("- 显著关联 (FDR < 0.05):", n_sig_005, "\n")
+cat("- 显著关联 (FDR < 0.10):", n_sig_010, "\n")
+cat("- 显著关联 (FDR < 0.25):", n_sig_025, "\n")
+cat("- 强关联 (|r| > 0.5):", sum(associations$Abs_Correlation > 0.5, na.rm = TRUE), "\n\n")
+
+# 显示最强关联
+cat("【Top 5 最强关联】\n")
+top5_assoc <- associations |>
+  dplyr::arrange(desc(Abs_Correlation)) |>
+  head(5)
+
+for (i in 1:nrow(top5_assoc)) {
+  direction <- ifelse(top5_assoc$Correlation[i] > 0, "正相关", "负相关")
+  cat(i, ". ", top5_assoc$Species_short[i], " ↔ ", as.character(top5_assoc$KO[i]), "\n",
+      "   r = ", round(top5_assoc$Correlation[i], 3), " (", direction, ")\n", sep = "")
+}
+
+cat("\n【生物学意义】\n")
+cat("物种-功能关联分析揭示了微生物组的功能结构：\n")
+cat("1. 正相关：物种丰度↑ → 功能丰度↑（该物种贡献该功能）\n")
+cat("2. 负相关：物种丰度↑ → 功能丰度↓（竞争或抑制关系）\n")
+cat("3. 即使组间差异不显著，强关联仍有生物学价值\n")
+
+cat("\n【输出文件】\n")
+cat("- 20_taxa_ko_correlation_heatmap.png: 物种-KO相关性热图\n")
+cat("- 21_taxa_ko_associations.csv: 完整关联表\n")
+cat("- 22_taxa_ko_network.png: 关联网络图\n")
+```
+
+
+# Part 7: KO驱动物种分析 (KO Driver Species Analysis)
+
+Part 6发现了强物种-KO关联，现在我们需要用**stratified数据**来验证：
+- 这些强相关的KO在两组间是由哪些物种贡献的？
+- 是所有物种同步变化，还是特定"驱动物种"主导？
+
+## 7.1 加载KO Stratified数据
+
+```{r}
+#| label: load-ko-stratified
+
+# ------------------------------------------------------------------------------
+# 加载KO stratified数据
+# 格式：KO_ID|species → abundance
+# ------------------------------------------------------------------------------
+
+ko_stratified_file <- here::here(
+  "data/00-raw/d02_functional_profiling/humann4",
+  "humann4_genefamilies-step3-KO_stratified.tsv"
+)
+
+ko_stratified <- read.delim(ko_stratified_file, header = TRUE, sep = "\t")
+
+cat("=== KO Stratified数据 ===\n")
+cat("总行数:", nrow(ko_stratified), "\n")
+cat("列数:", ncol(ko_stratified), "\n")
+
+# 查看数据结构
+cat("\n前几行示例:\n")
+print(head(ko_stratified[, 1:4], 5))
+```
+
+```{r}
+#| label: parse-ko-stratified
+
+# ------------------------------------------------------------------------------
+# 解析KO|species格式
+# ------------------------------------------------------------------------------
+
+# 获取第一列名称
+ko_first_col <- colnames(ko_stratified)[1]
+
+# 解析KO和物种
+ko_stratified_parsed <- ko_stratified |>
+  dplyr::mutate(
+    original_id = .data[[ko_first_col]],
+    ko_id = stringr::str_extract(original_id, "^[^|]+"),
+    species = stringr::str_extract(original_id, "\\|(.+)$") |>
+      stringr::str_remove("^\\|")
+  ) |>
+  # 只保留有物种注释的行
+  dplyr::filter(!is.na(species) & species != "")
+
+# 清理样本列名
+sample_cols <- base::setdiff(colnames(ko_stratified_parsed),
+                             c(ko_first_col, "original_id", "ko_id", "species"))
+colnames(ko_stratified_parsed) <- gsub("_Abundance$", "", colnames(ko_stratified_parsed))
+
+cat("=== 解析后数据 ===\n")
+cat("KO-物种组合数:", nrow(ko_stratified_parsed), "\n")
+cat("唯一KO数:", length(unique(ko_stratified_parsed$ko_id)), "\n")
+cat("唯一物种数:", length(unique(ko_stratified_parsed$species)), "\n")
+```
+
+## 7.2 提取强相关KO的驱动物种
+
+```{r}
+#| label: extract-top-correlated-kos
+
+# ------------------------------------------------------------------------------
+# 提取Part 6中发现的强相关KO
+# ------------------------------------------------------------------------------
+
+# 获取Top 20强相关的KO（按相关性绝对值）
+top_correlated_kos <- associations |>
+  dplyr::arrange(desc(Abs_Correlation)) |>
+  dplyr::distinct(KO, .keep_all = TRUE) |>  # 每个KO只取最强关联
+  head(20) |>
+  dplyr::pull(KO) |>
+  as.character()
+
+cat("=== Top 20 强相关KO ===\n")
+print(top_correlated_kos)
+
+# 从stratified数据中筛选这些KO
+ko_driver_data <- ko_stratified_parsed |>
+  dplyr::filter(ko_id %in% top_correlated_kos)
+
+cat("\n筛选到的KO-物种组合数:", nrow(ko_driver_data), "\n")
+```
+
+```{r}
+#| label: calculate-ko-species-contribution
+
+# ------------------------------------------------------------------------------
+# 计算每个物种对各KO的贡献
+# ------------------------------------------------------------------------------
+
+# 获取核心比较组样本
+corepair_sample_ids <- colnames(tse_ko_corepair)
+
+# 更新样本列名
+sample_cols_updated <- gsub("_Abundance$", "", sample_cols)
+available_samples <- base::intersect(corepair_sample_ids, colnames(ko_driver_data))
+
+cat("可用样本数:", length(available_samples), "\n")
+
+if (length(available_samples) > 0) {
+  # 计算每个KO-物种组合在各组的平均丰度
+  ko_driver_summary <- ko_driver_data |>
+    dplyr::select(ko_id, species, dplyr::all_of(available_samples)) |>
+    tidyr::pivot_longer(
+      cols = dplyr::all_of(available_samples),
+      names_to = "sample_id",
+      values_to = "abundance"
+    ) |>
+    # 添加分组信息
+    dplyr::left_join(
+      sample_metadata_ko |> dplyr::select(sample_id, treatment_group),
+      by = "sample_id"
+    ) |>
+    dplyr::filter(!is.na(treatment_group)) |>
+    # 计算每组平均值
+    dplyr::group_by(ko_id, species, treatment_group) |>
+    dplyr::summarise(
+      mean_abundance = mean(abundance, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  cat("\n=== KO驱动物种汇总 ===\n")
+  cat("汇总行数:", nrow(ko_driver_summary), "\n")
+  cat("涉及KO数:", length(unique(ko_driver_summary$ko_id)), "\n")
+  cat("涉及物种数:", length(unique(ko_driver_summary$species)), "\n")
+}
+```
+
+## 7.3 KO驱动物种堆叠柱状图
+
+```{r}
+#| label: ko-driver-stacked-bar
+#| fig-width: 14
+#| fig-height: 12
+
+# ------------------------------------------------------------------------------
+# 堆叠柱状图：展示各KO在两组中的物种贡献
+# ------------------------------------------------------------------------------
+
+if (exists("ko_driver_summary") && nrow(ko_driver_summary) > 0) {
+  # 选择Top 10 KO
+  top10_kos <- associations |>
+    dplyr::arrange(desc(Abs_Correlation)) |>
+    dplyr::distinct(KO, .keep_all = TRUE) |>
+    head(10) |>
+    dplyr::pull(KO) |>
+    as.character()
+
+  # 筛选数据并处理物种名称
+  ko_bar_data <- ko_driver_summary |>
+    dplyr::filter(ko_id %in% top10_kos) |>
+    dplyr::mutate(
+      species_short = stringr::str_replace(species, ".*s__", ""),
+      species_short = stringr::str_trunc(species_short, 25),
+      ko_short = stringr::str_trunc(ko_id, 15)
+    ) |>
+    # 每个KO只保留Top 5贡献物种
+    dplyr::group_by(ko_id, treatment_group) |>
+    dplyr::mutate(
+      rank = rank(-mean_abundance, ties.method = "first"),
+      species_grouped = ifelse(rank <= 5, species_short, "Other")
+    ) |>
+    dplyr::group_by(ko_id, ko_short, treatment_group, species_grouped) |>
+    dplyr::summarise(
+      mean_abundance = sum(mean_abundance),
+      .groups = "drop"
+    )
+
+  cat("堆叠柱状图数据行数:", nrow(ko_bar_data), "\n")
+
+  if (nrow(ko_bar_data) > 0 && length(unique(ko_bar_data$ko_short)) > 0) {
+    # 创建颜色
+    n_species <- length(unique(ko_bar_data$species_grouped))
+    if (n_species <= 12) {
+      species_colors <- RColorBrewer::brewer.pal(max(3, n_species), "Set3")
+    } else {
+      species_colors <- colorRampPalette(RColorBrewer::brewer.pal(12, "Set3"))(n_species)
+    }
+    names(species_colors) <- unique(ko_bar_data$species_grouped)
+
+    # 堆叠柱状图
+    p7_1_ko_driver_bar <- ggplot(
+      ko_bar_data,
+      aes(x = treatment_group, y = mean_abundance, fill = species_grouped)
+    ) +
+      geom_bar(stat = "identity", position = "stack") +
+      facet_wrap(~ ko_short, scales = "free_y", ncol = 2) +
+      scale_fill_manual(values = species_colors, name = "Species") +
+      labs(
+        title = "KO Driver Species: Who Contributes to Each Function?",
+        subtitle = "Top 10 strongly-correlated KOs | Top 5 species + Other per KO",
+        x = "Treatment Group",
+        y = "Mean Abundance"
+      ) +
+      theme_bw() +
+      theme(
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.text = element_text(size = 9, face = "bold"),
+        legend.position = "right"
+      )
+
+    print(p7_1_ko_driver_bar)
+
+    ggsave(
+      path_target("24_ko_driver_species_stacked_bar.png"),
+      p7_1_ko_driver_bar,
+      width = 14, height = 12, dpi = 300
+    )
+  }
+} else {
+  cat("KO驱动物种数据不可用\n")
+}
+```
+
+## 7.4 KO贡献变化热图
+
+```{r}
+#| label: ko-driver-heatmap
+#| fig-width: 14
+#| fig-height: 10
+
+# ------------------------------------------------------------------------------
+# 热图：物种对各KO的贡献变化
+# ------------------------------------------------------------------------------
+
+if (exists("ko_driver_summary") && nrow(ko_driver_summary) > 0) {
+  # 计算组间差异
+  ko_driver_diff <- ko_driver_summary |>
+    tidyr::pivot_wider(
+      names_from = treatment_group,
+      values_from = mean_abundance,
+      values_fill = 0
+    )
+
+  # 检查两组列是否存在
+  if ("ApcMUT_HpWT" %in% colnames(ko_driver_diff) &&
+      "ApcMUT_HpKO" %in% colnames(ko_driver_diff)) {
+
+    ko_driver_diff <- ko_driver_diff |>
+      dplyr::mutate(
+        diff_abundance = ApcMUT_HpWT - ApcMUT_HpKO,
+        species_short = stringr::str_replace(species, ".*s__", ""),
+        species_short = stringr::str_trunc(species_short, 25),
+        ko_short = stringr::str_trunc(ko_id, 12)
+      ) |>
+      dplyr::filter(abs(diff_abundance) > 0)  # 只保留有差异的
+
+    # 筛选差异最大的组合
+    top_diff <- ko_driver_diff |>
+      dplyr::slice_max(order_by = abs(diff_abundance), n = 100)
+
+    if (nrow(top_diff) > 0) {
+      # 先聚合确保每个species-KO组合唯一（防止pivot_wider报错）
+      top_diff_aggregated <- top_diff |>
+        dplyr::group_by(species_short, ko_short) |>
+        dplyr::summarise(
+          diff_abundance = sum(diff_abundance, na.rm = TRUE),
+          .groups = "drop"
+        )
+
+      cat("聚合后数据行数:", nrow(top_diff_aggregated), "\n")
+
+      # 创建热图矩阵
+      heatmap_matrix <- top_diff_aggregated |>
+        tidyr::pivot_wider(
+          names_from = ko_short,
+          values_from = diff_abundance,
+          values_fill = 0
+        ) |>
+        tibble::column_to_rownames("species_short") |>
+        as.matrix()
+
+      cat("热图矩阵维度:", nrow(heatmap_matrix), "x", ncol(heatmap_matrix), "\n")
+
+      # 限制维度
+      if (nrow(heatmap_matrix) > 30) {
+        row_order <- order(rowSums(abs(heatmap_matrix)), decreasing = TRUE)[1:30]
+        heatmap_matrix <- heatmap_matrix[row_order, , drop = FALSE]
+      }
+      if (ncol(heatmap_matrix) > 15) {
+        col_order <- order(colSums(abs(heatmap_matrix)), decreasing = TRUE)[1:15]
+        heatmap_matrix <- heatmap_matrix[, col_order, drop = FALSE]
+      }
+
+      cat("筛选后矩阵维度:", nrow(heatmap_matrix), "x", ncol(heatmap_matrix), "\n")
+
+      # 确保矩阵有足够的行列
+      if (nrow(heatmap_matrix) >= 2 && ncol(heatmap_matrix) >= 2) {
+        # 使用95%百分位数设置颜色范围（避免极端值拉宽范围）
+        all_values <- as.vector(heatmap_matrix)
+        q95 <- quantile(abs(all_values), 0.95, na.rm = TRUE)
+        color_limit <- max(q95, 0.1)  # 至少0.1，避免太小
+
+        cat("差异值范围:", round(min(heatmap_matrix), 3), "到",
+            round(max(heatmap_matrix), 3), "\n")
+        cat("95%百分位数:", round(q95, 3), "\n")
+        cat("颜色轴范围:", round(-color_limit, 3), "到", round(color_limit, 3), "\n")
+
+        # 对称颜色范围
+        color_breaks <- seq(-color_limit, color_limit, length.out = 101)
+
+        # 绘制热图（对称颜色轴）
+        p7_2_ko_driver_heatmap <- pheatmap::pheatmap(
+          heatmap_matrix,
+          color = colorRampPalette(c("#4575B4", "white", "#D73027"))(100),
+          breaks = color_breaks,  # 使用对称的breaks
+          cluster_rows = TRUE,
+          cluster_cols = TRUE,
+          show_rownames = TRUE,
+          show_colnames = TRUE,
+          fontsize_row = 8,
+          fontsize_col = 9,
+          main = "KO Driver Species: Contribution Difference (HpWT - HpKO)\nBlue = Higher in HpKO | Red = Higher in HpWT"
+        )
+
+        # 保存到文件
+        png(path_target("25_ko_driver_contribution_heatmap.png"),
+            width = 14, height = 10, units = "in", res = 300)
+        grid::grid.newpage()
+        grid::grid.draw(p7_2_ko_driver_heatmap$gtable)
+        dev.off()
+
+        cat("✓ 热图已保存\n")
+      } else {
+        cat("矩阵维度不足，无法绑制热图\n")
+      }
+    }
+  }
+} else {
+  cat("ko_driver_summary不存在或为空\n")
+}
+```
+
+## 7.5 关键驱动物种识别
+
+```{r}
+#| label: identify-key-ko-drivers
+
+# ------------------------------------------------------------------------------
+# 识别关键驱动物种：在多个KO中贡献变化大的物种
+# ------------------------------------------------------------------------------
+
+if (exists("ko_driver_diff") && nrow(ko_driver_diff) > 0 &&
+    "diff_abundance" %in% colnames(ko_driver_diff)) {
+
+  key_ko_drivers <- ko_driver_diff |>
+    dplyr::group_by(species_short) |>
+    dplyr::summarise(
+      n_kos = n(),
+      total_diff = sum(abs(diff_abundance)),
+      mean_diff = mean(diff_abundance),
+      direction = ifelse(mean_diff > 0, "Higher in HpWT", "Higher in HpKO"),
+      .groups = "drop"
+    ) |>
+    dplyr::arrange(desc(total_diff))
+
+  cat("=== 关键KO驱动物种 (Top 15) ===\n")
+  cat("这些物种在多个强相关KO中贡献变化最大\n\n")
+
+  print(head(key_ko_drivers, 15))
+
+  # 保存结果
+  write.csv(
+    key_ko_drivers,
+    file = path_target("26_key_ko_driver_species.csv"),
+    row.names = FALSE
+  )
+
+  cat("\n✓ 关键驱动物种列表已保存\n")
+}
+```
+
+## 7.6 Part 7 小结
+
+```{r}
+#| label: part7-summary
+
+cat("========================================\n")
+cat("   Part 7: KO驱动物种分析小结\n")
+cat("========================================\n\n")
+
+if (exists("key_ko_drivers") && nrow(key_ko_drivers) > 0) {
+  cat("【分析概览】\n")
+  cat("- 分析的强相关KO数: 20\n")
+  cat("- 涉及的驱动物种数:", nrow(key_ko_drivers), "\n\n")
+
+  cat("【关键发现】\n")
+  cat("Top 5 驱动物种（影响最多KO的物种）:\n\n")
+
+  for (i in 1:min(5, nrow(key_ko_drivers))) {
+    cat(i, ". ", key_ko_drivers$species_short[i], "\n",
+        "   影响KO数: ", key_ko_drivers$n_kos[i], "\n",
+        "   方向: ", key_ko_drivers$direction[i], "\n",
+        "   总贡献差异: ", round(key_ko_drivers$total_diff[i], 2), "\n\n", sep = "")
+  }
+
+  cat("【生物学意义】\n")
+  cat("驱动物种分析揭示了功能变化的微生物学基础：\n")
+  cat("1. 如果同一KO由不同物种主导 → 功能替代/补偿\n")
+  cat("2. 如果特定物种驱动多个KO变化 → 该物种是'功能枢纽'\n")
+  cat("3. 结合01分析的物种差异结果 → 验证因果关系\n")
+} else {
+  cat("驱动物种数据不可用\n")
+}
+
+cat("\n【输出文件】\n")
+cat("- 24_ko_driver_species_stacked_bar.png: KO驱动物种堆叠柱状图\n")
+cat("- 25_ko_driver_contribution_heatmap.png: KO贡献变化热图\n")
+cat("- 26_key_ko_driver_species.csv: 关键驱动物种列表\n")
+```
+
+
+# 综合结论 (Overall Conclusions)
+
+```{r}
+#| label: overall-conclusions
+
+cat("
+================================================================================
+                    02_functional_profiling 分析总结
+================================================================================
+
+【研究背景】
+本分析旨在探索 H. pylori CagA 对 ApcMUT 小鼠肠道微生物组功能的影响。
+核心比较：ApcMUT_HpWT (野生型H.pylori) vs ApcMUT_HpKO (CagA敲除H.pylori)
+
+【分析流程与主要发现】
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Part 1-2: 数据导入与功能多样性                                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ • 成功创建HUMAnN4 Pathway TSE对象                                           │
+│ • Alpha多样性：组间无显著差异                                               │
+│ • Beta多样性：组间无显著分离                                                │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Part 3: Pathway差异丰度分析 (MaAsLin2)                                      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ • 方法：MaAsLin2 (HUMAnN4协议推荐)                                          │
+│ • 结果：未发现显著差异通路 (q < 0.25)                                       │
+│ • 解释：通路水平可能过于宏观，功能冗余掩盖信号                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Part 4: 驱动物种分析                                                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ • 分析了通路背后的物种贡献                                                  │
+│ • 生成了物种-通路贡献可视化                                                 │
+│ • 揭示了功能的微生物学基础                                                  │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Part 5: KO基因家族差异分析 (MaAsLin2)                                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ • 方法：MaAsLin2 (更精细的基因水平分析)                                     │
+│ • 结果：未发现显著差异KO (q < 0.25)                                         │
+│ • 解释：即使在基因水平，组间功能差异仍不显著                                │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Part 6: 物种-功能整合分析 ⭐ 关键发现                                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ • 发现78个显著物种-KO关联 (FDR < 0.05)                                      │
+│ • 发现496个强关联 (|r| > 0.5)                                               │
+│ • Top关联物种：S. aureus, M. gnavus, K. pneumoniae, C. scindens            │
+│ • 意义：虽然组间差异不显著，但物种与功能存在强耦合关系                      │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Part 7: KO驱动物种分析 ⭐ 功能归因                                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ • 使用stratified数据追溯KO的物种来源                                        │
+│ • 识别了驱动关键KO变化的物种                                                │
+│ • 发现功能贡献的物种组成在两组间发生了更替                                  │
+│ • 意义：揭示了'谁干的'——哪些物种驱动功能变化                               │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+【生物学解读】
+
+1. 功能冗余假说 (Functional Redundancy)
+   ───────────────────────────────────
+   H. pylori CagA可能改变了微生物群落组成（见01分析），
+   但不同物种可以执行相似的代谢功能，导致整体功能输出稳定。
+   这是肠道微生物组的一个重要特征——'冗余保障'。
+
+2. 物种-功能耦合
+   ──────────────
+   Part 6发现的强相关说明特定物种与特定功能紧密关联：
+   • S. aureus 与多个KO正相关 → 可能是特定代谢途径的主要贡献者
+   • K. pneumoniae 与某些KO负相关 → 可能存在竞争或抑制关系
+
+3. 功能驱动物种 (Part 7发现)
+   ─────────────────────────
+   Stratified数据分析揭示了KO变化背后的微生物学基础：
+   • 同一KO在HpWT vs HpKO中由不同物种主导 → 功能替代现象
+   • 某些物种驱动多个KO变化 → '功能枢纽'物种
+   • 这解释了为什么整体KO丰度无差异，但物种组成在变化
+
+4. 研究意义
+   ─────────
+   负结果（无显著功能差异）本身就是重要发现：
+   • 提示CagA对肠道功能的影响可能是间接的
+   • 功能稳定性可能掩盖了物种水平的变化
+   • Part 7证实了物种组成确实在发生更替（功能替代）
+   • 需要结合宿主表型数据（如肿瘤负荷）进一步验证
+
+【后续分析建议】
+
+1. 株系水平分析 (StrainPhlAn)
+   - 检查关键物种（如E. coli）是否有株系特异性功能变化
+
+2. 表型关联分析
+   - 如获得肿瘤负荷/免疫指标数据，可计算KO与表型的相关性
+
+3. 跨组学整合
+   - 结合01（物种）和02（功能）分析，构建完整的'物种→功能→表型'因果链
+
+================================================================================
+")
+```
+
+```{r}
+#| label: session-info
+
+cat("\n【分析环境信息】\n")
+cat("R版本:", R.version.string, "\n")
+cat("分析日期:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
+cat("工作目录:", getwd(), "\n")
+```
+
+
+## Files written
+
+These files have been written to the target directory, `r paste0("data/", params$name)`:
+
+```{r}
+#| label: list-files-target
+#| include: false
+projthis::proj_dir_info(path_target(), tz = "CET")
+```

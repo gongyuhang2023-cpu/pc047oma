@@ -1,0 +1,42 @@
+Package: pc047oma
+Type: Package
+Title: PC047 vCagAepitope Gut Microbiome Analysis
+Version: 0.1.0
+Authors@R: c(
+    person(
+      "Yuhang", "Gong",
+      email = "gongyuhang2023@gmail.com",
+      role = c("aut", "cre"),
+      comment = c(ORCID = "")
+    )
+  )
+Description: Gut microbiome analysis for PC047 vCagAepitope project.
+    This project investigates how Helicobacter pylori CagA protein
+    reshapes the gut microbiome in Apc-mutant mouse models of
+    tumorigenesis. Analysis follows the OMA (Orchestrating Microbiome
+    Analysis) framework and bioBakery 3 protocols, including alpha/beta
+    diversity analysis, differential abundance testing, and functional
+    profiling using Kraken2, Bracken, and HUMAnN4.
+License: GPL-3
+Encoding: UTF-8
+LazyData: true
+Depends:
+    R (>= 4.2.0)
+Imports:
+    mia,
+    TreeSummarizedExperiment,
+    vegan,
+    here,
+    dplyr,
+    ggplot2
+Suggests:
+    ANCOMBC,
+    ALDEx2,
+    Maaslin2,
+    quarto,
+    knitr,
+    rmarkdown
+VignetteBuilder: knitr
+RoxygenNote: 7.2.3
+URL: https://github.com/gongyuhang2023-cpu/pc047oma
+BugReports: https://github.com/gongyuhang2023-cpu/pc047oma/issues
