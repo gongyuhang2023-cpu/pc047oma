@@ -1,0 +1,1109 @@
+---
+title: "03_singlem_diversity_analysis"
+title-block-banner: true
+author:
+  - name: Gong Yuhang
+date: 2025-01-07
+toc: true
+toc-depth: 4
+number-sections: true
+code-fold: true
+code-line-numbers: true
+code-tools: true
+format:
+  html:
+    embed-resources: true
+    smooth-scroll: true
+    page-layout: full
+reference-location: section
+citation-location: document
+params:
+  name: "03_singlem_diversity_analysis"
+---
+
+**Updated: `r format(Sys.time(), '%Y-%m-%d %H:%M:%S', tz = 'CET')` CET.**
+
+本文档是项目 pc047 (vCagAepitope) 的 SingleM/Lyrebird 分析模块。
+
+**分析目的**：
+使用 SingleM（细菌/古菌）和 Lyrebird（噬菌体）的 OTU-based 分类结果，评估 CagA 依赖性感染对肠道微生物组的影响。
+
+**相比 01 分析（Kraken2/Bracken）的优势**：
+1. **系统发育树**：可计算 UniFrac 距离（考虑进化关系）
+2. **新物种检测**：能识别数据库中未收录的物种
+3. **OTU分辨率**：更高的分类精度
+
+```{r}
+#| label: params
+#| eval: !expr interactive()
+#| include: false
+params = list(name = "03_singlem_diversity_analysis")
+```
+
+```{r}
+#| label: setup
+#| message: false
+#| include: false
+#| warning: false
+wd <- "analyses"
+if (basename(getwd()) != wd) {
+  setwd(here::here(wd))
+}
+here::i_am(paste0(params$name, ".qmd"), uuid = "afa4f8be-7482-4ada-828a-4a541866dfe6")
+projthis::proj_create_dir_target(params$name, clean = FALSE)
+path_target <- projthis::proj_path_target(params$name)
+path_source <- projthis::proj_path_source(params$name)
+path_raw <- path_source("00-raw")
+path_resource <- here::here(path_raw, "d00-resource")
+path_data <- here::here(path_raw, paste0("d", params$name))
+dir.create(path_raw, recursive = TRUE, showWarnings = FALSE)
+dir.create(path_data, recursive = TRUE, showWarnings = FALSE)
+dir.create(path_resource, recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r}
+#| label: packages
+#| message: false
+suppressPackageStartupMessages({
+  library(here)
+  library(conflicted)
+  library(tidyverse)
+  library(data.table)
+  library(mia)
+  library(TreeSummarizedExperiment)
+  library(readxl)
+  library(miaViz)
+  library(scuttle)
+  library(patchwork)
+  library(MatrixGenerics)
+  library(stringr)
+  library(ggpubr)
+
+  library(scater)
+  library(vegan)
+  library(ggplot2)
+  library(ANCOMBC)
+  library(ALDEx2)
+  library(ape) # 用于读取系统发育树
+  devtools::load_all()
+})
+
+# 解决命名空间冲突
+conflicts_prefer(base::setdiff)
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(dplyr::select)
+conflicts_prefer(dplyr::lag)
+conflicts_prefer(dplyr::first)
+conflicts_prefer(ggplot2::annotate)
+conflicts_prefer(base::intersect)
+
+set.seed(20261)
+```
+
+# Part 1: SingleM 细菌/古菌分析
+
+## 1. 数据导入与 TSE 构建
+
+根据 SingleM Protocol，我们使用以下分析就绪文件：
+- `*_OTU_abundance.tsv`: OTU 丰度矩阵（相对丰度 %）
+- `*_OTU_taxonomy.tsv`: OTU 分类信息
+- `*_OTU_tree.nwk`: 系统发育树（用于 UniFrac 计算）
+
+```{r}
+#| label: singlem-data-import
+
+# ==============================================================================
+# Step 1: 定义数据路径
+# ==============================================================================
+singlem_data_path <- here::here(
+  "data", "00-raw", "d03_singlem_diversity_analysis", "pc047-rst_singleM"
+)
+
+# ==============================================================================
+# Step 2: 读取 OTU 丰度矩阵
+# ==============================================================================
+# SingleM 输出的是相对丰度（百分比），我们将其转换为比例（0-1）
+otu_abundance <- read_tsv(
+  file.path(singlem_data_path, "pc047-singleM_OTU_abundance.tsv"),
+  show_col_types = FALSE
+) |>
+  column_to_rownames("otu_id") |>
+  as.matrix()
+
+# 将百分比转换为比例
+otu_abundance <- otu_abundance / 100
+
+cat("OTU 矩阵维度:", dim(otu_abundance), "\n")
+cat("样本数:", ncol(otu_abundance), "\n")
+cat("OTU 数:", nrow(otu_abundance), "\n")
+
+# ==============================================================================
+# Step 3: 读取 OTU 分类信息
+# ==============================================================================
+otu_taxonomy <- read_tsv(
+  file.path(singlem_data_path, "pc047-singleM_OTU_taxonomy.tsv"),
+  show_col_types = FALSE
+) |>
+  column_to_rownames("otu_id") |>
+  DataFrame()
+
+# 查看分类层级
+cat("分类层级:", colnames(otu_taxonomy), "\n")
+
+# ==============================================================================
+# Step 4: 读取系统发育树
+# ==============================================================================
+otu_tree <- ape::read.tree(
+  file.path(singlem_data_path, "pc047-singleM_OTU_tree.nwk")
+)
+
+cat("系统发育树 tip 数:", length(otu_tree$tip.label), "\n")
+
+# ==============================================================================
+# Step 5: 构建 TreeSummarizedExperiment 对象
+# ==============================================================================
+# 确保 OTU ID 顺序一致
+common_otus <- intersect(rownames(otu_abundance), rownames(otu_taxonomy))
+common_otus <- intersect(common_otus, otu_tree$tip.label)
+
+cat("共同 OTU 数:", length(common_otus), "\n")
+
+# 子集化数据
+otu_abundance <- otu_abundance[common_otus, ]
+otu_taxonomy <- otu_taxonomy[common_otus, ]
+otu_tree <- ape::keep.tip(otu_tree, common_otus)
+
+# 创建 TSE 对象
+# 注意：SingleM 输出是相对丰度，我们将其乘以 10000 作为伪计数以便后续分析
+tse_singlem <- TreeSummarizedExperiment(
+  assays = list(
+    relabundance = otu_abundance,
+    counts = round(otu_abundance * 10000) # 伪计数用于某些需要整数的分析
+  ),
+  rowData = otu_taxonomy,
+  rowTree = otu_tree
+)
+
+tse_singlem
+```
+
+```{r}
+#| label: singlem-add-metadata
+
+# ==============================================================================
+# Step 6: 绑定样本元数据
+# ==============================================================================
+metadata <- readxl::read_xlsx(
+  here::here("data", "metadata", "pc047-metadata.xlsx")
+) |>
+  column_to_rownames("sample_id")
+
+# 匹配样本名
+common_samples <- intersect(colnames(tse_singlem), rownames(metadata))
+cat("匹配的样本数:", length(common_samples), "\n")
+
+tse_singlem <- tse_singlem[, common_samples]
+colData(tse_singlem) <- DataFrame(metadata[common_samples, ])
+
+# ==============================================================================
+# Step 7: 创建 Caecum 子集
+# ==============================================================================
+# 本项目主要分析 caecum（盲肠）样本
+tse_singlem_ca <- tse_singlem[, tse_singlem$source_organ == "caecum"]
+
+cat("Caecum 样本数:", ncol(tse_singlem_ca), "\n")
+cat("各实验组样本分布:\n")
+print(table(tse_singlem_ca$treatment_group))
+
+tse_singlem_ca
+```
+
+## 2. 数据探索与质量控制 (QC)
+
+### 2.1 第一遍清洗：数据探索
+
+```{r}
+#| label: singlem-qc-round1
+
+# ==============================================================================
+# 1. 计算文库大小（基于伪计数）
+# ==============================================================================
+tse_singlem_ca_1 <- tse_singlem_ca
+tse_singlem_ca_1 <- addPerCellQCMetrics(tse_singlem_ca_1, assay.type = "counts")
+
+# 可视化文库大小分布
+p1 <- plotHistogram(tse_singlem_ca_1, col.var = "total") +
+  labs(title = "SingleM: Library Size Distribution", x = "Total Pseudo-counts")
+p1
+
+ggsave(
+  filename = here::here("data", params$name, "01_qc_library_size_singlem.png"),
+  plot = p1, width = 8, height = 6, dpi = 300
+)
+
+# ==============================================================================
+# 2. Prevalence 分析
+# ==============================================================================
+tse_singlem_ca_1 <- addPrevalence(
+  tse_singlem_ca_1,
+  assay.type = "relabundance",
+  detection = 0,
+  as.relative = FALSE # 已经是相对丰度
+)
+
+rowData(tse_singlem_ca_1)$prevalence <- as.numeric(rowData(tse_singlem_ca_1)$prevalence)
+summary(rowData(tse_singlem_ca_1)$prevalence)
+
+p2 <- plotHistogram(tse_singlem_ca_1, row.var = "prevalence") +
+  labs(title = "SingleM: OTU Prevalence Distribution", x = "Prevalence (Fraction of Samples)")
+p2
+
+ggsave(
+  filename = here::here("data", params$name, "02_qc_prevalence_singlem.png"),
+  plot = p2, width = 8, height = 6, dpi = 300
+)
+
+# ==============================================================================
+# 3. 查看丰度最高的 OTU
+# ==============================================================================
+top_otus <- getTop(tse_singlem_ca_1, top = 10, assay.type = "relabundance")
+cat("Top 10 OTUs:\n")
+print(top_otus)
+
+# 查看对应的分类信息
+cat("\nTop 10 OTU 分类信息:\n")
+print(rowData(tse_singlem_ca_1)[top_otus, ])
+```
+
+### 2.2 第二遍清洗：去除异常样本
+
+```{r}
+#| label: singlem-qc-round2
+
+# ==============================================================================
+# 1. 检查是否有异常样本（如 ca08 在 01 分析中被识别为污染）
+# ==============================================================================
+tse_singlem_ca_2 <- tse_singlem_ca
+
+# 查看 ca08 的情况
+if ("ca08" %in% colnames(tse_singlem_ca_2)) {
+  ca08_top <- sort(assay(tse_singlem_ca_2[, "ca08"], "relabundance"), decreasing = TRUE)[1:5]
+  cat("ca08 样本 Top 5 OTU 丰度:\n")
+  print(ca08_top)
+
+  # 根据 01 分析结果，ca08 存在 E. coli 异常高丰度，考虑移除
+  cat("\n根据 01 分析结果，移除 ca08 样本\n")
+  tse_singlem_ca_2 <- tse_singlem_ca_2[, colnames(tse_singlem_ca_2) != "ca08"]
+}
+
+cat("清洗后样本数:", ncol(tse_singlem_ca_2), "\n")
+
+# ==============================================================================
+# 2. Prevalence 过滤（保留 >10% 样本中出现的 OTU）
+# ==============================================================================
+tse_singlem_ca_2 <- addPrevalence(
+  tse_singlem_ca_2,
+  assay.type = "relabundance",
+  detection = 0,
+  as.relative = FALSE
+)
+
+cat("过滤前 OTU 数:", nrow(tse_singlem_ca_2), "\n")
+tse_singlem_ca_2 <- subsetByPrevalent(tse_singlem_ca_2, prevalence = 0.1)
+cat("过滤后 OTU 数:", nrow(tse_singlem_ca_2), "\n")
+
+# ==============================================================================
+# 3. 更新 QC 指标
+# ==============================================================================
+tse_singlem_ca_2 <- addPerCellQCMetrics(tse_singlem_ca_2, assay.type = "counts")
+
+p3 <- plotHistogram(tse_singlem_ca_2, col.var = "total") +
+  labs(title = "SingleM: Library Size (After Cleaning)", x = "Total Pseudo-counts")
+p3
+
+ggsave(
+  filename = here::here("data", params$name, "03_qc_library_size_cleaned_singlem.png"),
+  plot = p3, width = 8, height = 6, dpi = 300
+)
+```
+
+### 2.3 清洗后数据整理
+
+```{r}
+#| label: singlem-cleaned-data
+
+# ==============================================================================
+# 保存清洗后的 TSE 对象
+# ==============================================================================
+tse_singlem_ca_cleaned <- tse_singlem_ca_2
+
+# 查看分类层级
+cat("可用的分类层级:\n")
+print(taxonomyRanks(tse_singlem_ca_cleaned))
+
+# 保存清洗后的数据
+saveRDS(
+  tse_singlem_ca_cleaned,
+  file = here::here("data", params$name, "tse_singlem_ca_cleaned.rds")
+)
+
+tse_singlem_ca_cleaned
+```
+
+## 3. 群落组成可视化
+
+```{r}
+#| label: singlem-composition
+#| fig-width: 12
+#| fig-height: 8
+
+# ==============================================================================
+# 1. Top 10 OTU 组成图
+# ==============================================================================
+top_otus_cleaned <- getTop(tse_singlem_ca_cleaned, top = 10, assay.type = "relabundance")
+
+# 创建用于绘图的 TSE 副本
+tse_plot <- tse_singlem_ca_cleaned
+
+# 将非 Top 10 的 OTU 标记为 "Other"
+rowData(tse_plot)$OTU_Top10 <- ifelse(
+  rownames(tse_plot) %in% top_otus_cleaned,
+  paste0(rownames(tse_plot), " (", rowData(tse_plot)$Family, ")"),
+  "Other"
+)
+
+# 聚合
+tse_plot_agg <- agglomerateByVariable(tse_plot, by = "rows", f = "OTU_Top10")
+
+# 绘图
+p_comp <- plotAbundance(
+  tse_plot_agg,
+  assay.type = "relabundance",
+  order.row.by = "abund",
+  order.col.by = "Other"
+) +
+  labs(
+    title = "SingleM: Top 10 OTU Composition (Caecum)",
+    subtitle = "Non-top OTUs grouped as 'Other'"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
+
+p_comp
+
+ggsave(
+  filename = here::here("data", params$name, "04_composition_top10_singlem.png"),
+  plot = p_comp, width = 14, height = 8, dpi = 300
+)
+
+# ==============================================================================
+# 2. 按 Phylum 聚合的组成图
+# ==============================================================================
+# 检查是否有 Phylum 列
+if ("Phylum" %in% colnames(rowData(tse_singlem_ca_cleaned))) {
+  tse_phylum <- agglomerateByRank(tse_singlem_ca_cleaned, rank = "Phylum")
+
+  p_phylum <- plotAbundance(
+    tse_phylum,
+    assay.type = "relabundance",
+    order.row.by = "abund"
+  ) +
+    labs(title = "SingleM: Phylum-level Composition") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
+
+  p_phylum
+
+  ggsave(
+    filename = here::here("data", params$name, "05_composition_phylum_singlem.png"),
+    plot = p_phylum, width = 14, height = 8, dpi = 300
+  )
+}
+```
+
+## 4. Alpha 多样性分析
+
+```{r}
+#| label: singlem-alpha-diversity
+
+# ==============================================================================
+# 1. 计算 Alpha 多样性指数
+# ==============================================================================
+tse_singlem_ca_cleaned <- addAlpha(
+  tse_singlem_ca_cleaned,
+  assay.type = "counts",
+  index = c("shannon", "observed"),
+  name = c("shannon_index", "observed_richness")
+)
+
+cat("Alpha 多样性指数已计算\n")
+
+# ==============================================================================
+# 2. 提取核心比较组 (ApcMUT_HpWT vs ApcMUT_HpKO)
+# ==============================================================================
+tse_singlem_corepair <- tse_singlem_ca_cleaned[
+  , tse_singlem_ca_cleaned$treatment_group %in% c("ApcMUT_HpWT", "ApcMUT_HpKO")
+]
+tse_singlem_corepair$treatment_group <- factor(tse_singlem_corepair$treatment_group)
+
+cat("核心比较组样本数:\n")
+print(table(tse_singlem_corepair$treatment_group))
+
+# ==============================================================================
+# 3. 统计检验 (Wilcoxon 秩和检验)
+# ==============================================================================
+# Shannon 指数检验
+wilcox_shannon <- wilcox.test(
+  shannon_index ~ treatment_group,
+  data = colData(tse_singlem_corepair)
+)
+cat("\nShannon 指数 Wilcoxon 检验 P 值:", round(wilcox_shannon$p.value, 4), "\n")
+
+# Observed richness 检验
+wilcox_observed <- wilcox.test(
+  observed_richness ~ treatment_group,
+  data = colData(tse_singlem_corepair)
+)
+cat("Observed Richness Wilcoxon 检验 P 值:", round(wilcox_observed$p.value, 4), "\n")
+
+# ==============================================================================
+# 4. 可视化
+# ==============================================================================
+plot_alpha <- function(tse, y_var, title) {
+  plotColData(tse,
+    x = "treatment_group", y = y_var,
+    colour_by = "treatment_group",
+    show_boxplot = TRUE
+  ) +
+    stat_compare_means(
+      comparisons = list(c("ApcMUT_HpKO", "ApcMUT_HpWT")),
+      method = "wilcox.test", label = "p.format"
+    ) +
+    labs(title = title, x = "Group", y = "Index Value") +
+    theme_bw() +
+    theme(legend.position = "none")
+}
+
+p_shannon <- plot_alpha(tse_singlem_corepair, "shannon_index", "SingleM: Shannon Diversity")
+p_observed <- plot_alpha(tse_singlem_corepair, "observed_richness", "SingleM: Observed OTU Richness")
+
+p_alpha_combined <- p_shannon + p_observed +
+  plot_annotation(title = "SingleM Alpha Diversity: ApcMUT_HpWT vs ApcMUT_HpKO")
+p_alpha_combined
+
+ggsave(
+  filename = here::here("data", params$name, "06_alpha_diversity_singlem.png"),
+  plot = p_alpha_combined, width = 12, height = 6, dpi = 300
+)
+```
+
+## 5. Beta 多样性分析
+
+### 5.1 Bray-Curtis 距离
+
+```{r}
+#| label: singlem-beta-bray
+
+# ==============================================================================
+# 1. PCoA (Bray-Curtis)
+# ==============================================================================
+tse_singlem_corepair <- runMDS(
+  tse_singlem_corepair,
+  FUN = vegan::vegdist,
+  method = "bray",
+  assay.type = "relabundance",
+  name = "PCoA_Bray"
+)
+
+# 提取特征值
+eig_bray <- attr(reducedDim(tse_singlem_corepair, "PCoA_Bray"), "eig")
+rel_eig_bray <- eig_bray / sum(eig_bray[eig_bray > 0])
+
+# 可视化
+p_pcoa_bray <- plotReducedDim(
+  tse_singlem_corepair,
+  "PCoA_Bray",
+  colour_by = "treatment_group"
+) +
+  theme_bw() +
+  labs(
+    title = "SingleM: PCoA (Bray-Curtis)",
+    x = paste0("PCoA 1 (", round(100 * rel_eig_bray[1], 1), "%)"),
+    y = paste0("PCoA 2 (", round(100 * rel_eig_bray[2], 1), "%)")
+  )
+p_pcoa_bray
+
+ggsave(
+  filename = here::here("data", params$name, "07_beta_pcoa_bray_singlem.png"),
+  plot = p_pcoa_bray, width = 8, height = 6, dpi = 300
+)
+
+# ==============================================================================
+# 2. PERMANOVA 检验 (Bray-Curtis)
+# ==============================================================================
+permanova_bray <- getPERMANOVA(
+  tse_singlem_corepair,
+  assay.type = "relabundance",
+  formula = x ~ treatment_group
+)
+
+cat("\n=== PERMANOVA (Bray-Curtis) ===\n")
+print(permanova_bray$permanova)
+
+write.csv(
+  permanova_bray$permanova,
+  file = here::here("data", params$name, "08_permanova_bray_singlem.csv"),
+  row.names = TRUE
+)
+```
+
+### 5.2 UniFrac 距离（利用系统发育树）
+
+```{r}
+#| label: singlem-beta-unifrac
+
+# ==============================================================================
+# UniFrac 距离计算
+# SingleM 提供的系统发育树使我们能够计算 UniFrac 距离
+# 这是 Bracken 数据无法实现的分析
+# ==============================================================================
+
+# 1. Weighted UniFrac - 使用新的 getDissimilarity 方法
+tse_singlem_corepair <- runMDS(
+  tse_singlem_corepair,
+  FUN = getDissimilarity,
+  method = "unifrac",
+  weighted = TRUE,
+  assay.type = "counts",
+  name = "PCoA_wUniFrac"
+)
+
+eig_wuf <- attr(reducedDim(tse_singlem_corepair, "PCoA_wUniFrac"), "eig")
+rel_eig_wuf <- eig_wuf / sum(eig_wuf[eig_wuf > 0])
+
+p_pcoa_wunifrac <- plotReducedDim(
+  tse_singlem_corepair,
+  "PCoA_wUniFrac",
+  colour_by = "treatment_group"
+) +
+  theme_bw() +
+  labs(
+    title = "SingleM: PCoA (Weighted UniFrac)",
+    subtitle = "Phylogeny-aware distance metric",
+    x = paste0("PCoA 1 (", round(100 * rel_eig_wuf[1], 1), "%)"),
+    y = paste0("PCoA 2 (", round(100 * rel_eig_wuf[2], 1), "%)")
+  )
+p_pcoa_wunifrac
+
+ggsave(
+  filename = here::here("data", params$name, "09_beta_pcoa_wunifrac_singlem.png"),
+  plot = p_pcoa_wunifrac, width = 8, height = 6, dpi = 300
+)
+
+# 2. Unweighted UniFrac
+tse_singlem_corepair <- runMDS(
+  tse_singlem_corepair,
+  FUN = getDissimilarity,
+  method = "unifrac",
+  weighted = FALSE,
+  assay.type = "counts",
+  name = "PCoA_uwUniFrac"
+)
+
+eig_uwuf <- attr(reducedDim(tse_singlem_corepair, "PCoA_uwUniFrac"), "eig")
+rel_eig_uwuf <- eig_uwuf / sum(eig_uwuf[eig_uwuf > 0])
+
+p_pcoa_uwunifrac <- plotReducedDim(
+  tse_singlem_corepair,
+  "PCoA_uwUniFrac",
+  colour_by = "treatment_group"
+) +
+  theme_bw() +
+  labs(
+    title = "SingleM: PCoA (Unweighted UniFrac)",
+    subtitle = "Presence/absence phylogenetic distance",
+    x = paste0("PCoA 1 (", round(100 * rel_eig_uwuf[1], 1), "%)"),
+    y = paste0("PCoA 2 (", round(100 * rel_eig_uwuf[2], 1), "%)")
+  )
+p_pcoa_uwunifrac
+
+ggsave(
+  filename = here::here("data", params$name, "10_beta_pcoa_uwunifrac_singlem.png"),
+  plot = p_pcoa_uwunifrac, width = 8, height = 6, dpi = 300
+)
+
+# ==============================================================================
+# 3. PERMANOVA 检验 (UniFrac)
+# ==============================================================================
+# Weighted UniFrac PERMANOVA
+wunifrac_dist <- getDissimilarity(tse_singlem_corepair, method = "unifrac", weighted = TRUE, assay.type = "counts")
+permanova_wunifrac <- vegan::adonis2(
+  wunifrac_dist ~ treatment_group,
+  data = data.frame(colData(tse_singlem_corepair)),
+  permutations = 999
+)
+
+cat("\n=== PERMANOVA (Weighted UniFrac) ===\n")
+print(permanova_wunifrac)
+
+write.csv(
+  as.data.frame(permanova_wunifrac),
+  file = here::here("data", params$name, "11_permanova_wunifrac_singlem.csv"),
+  row.names = TRUE
+)
+
+# Unweighted UniFrac PERMANOVA
+uwunifrac_dist <- getDissimilarity(tse_singlem_corepair, method = "unifrac", weighted = FALSE, assay.type = "counts")
+permanova_uwunifrac <- vegan::adonis2(
+  uwunifrac_dist ~ treatment_group,
+  data = data.frame(colData(tse_singlem_corepair)),
+  permutations = 999
+)
+
+cat("\n=== PERMANOVA (Unweighted UniFrac) ===\n")
+print(permanova_uwunifrac)
+
+write.csv(
+  as.data.frame(permanova_uwunifrac),
+  file = here::here("data", params$name, "12_permanova_uwunifrac_singlem.csv"),
+  row.names = TRUE
+)
+
+# ==============================================================================
+# 4. Beta 多样性结果汇总图
+# ==============================================================================
+p_beta_combined <- (p_pcoa_bray | p_pcoa_wunifrac | p_pcoa_uwunifrac) +
+  plot_annotation(
+    title = "SingleM Beta Diversity: ApcMUT_HpWT vs ApcMUT_HpKO",
+    subtitle = "Comparison of different distance metrics"
+  )
+p_beta_combined
+
+ggsave(
+  filename = here::here("data", params$name, "13_beta_diversity_combined_singlem.png"),
+  plot = p_beta_combined, width = 18, height = 6, dpi = 300
+)
+```
+
+## 6. 差异丰度分析 (DAA)
+
+```{r}
+#| label: singlem-daa
+
+# ==============================================================================
+# 使用 ANCOM-BC 进行差异丰度分析
+# ==============================================================================
+# 准备数据
+tse_daa <- tse_singlem_corepair
+
+# 运行 ANCOM-BC
+ancombc_result <- ancombc2(
+  data = tse_daa,
+  assay_name = "counts",
+  fix_formula = "treatment_group",
+  p_adj_method = "BH",
+  prv_cut = 0.1,
+  lib_cut = 0,
+  group = "treatment_group",
+  struc_zero = TRUE,
+  neg_lb = TRUE,
+  alpha = 0.05,
+  global = FALSE
+)
+
+# 提取结果
+ancombc_res <- ancombc_result$res
+
+# 添加分类信息
+ancombc_res$taxon <- rownames(ancombc_res)
+ancombc_res <- ancombc_res |>
+  left_join(
+    rowData(tse_daa) |> as.data.frame() |> rownames_to_column("taxon"),
+    by = "taxon"
+  )
+
+# 按 q 值排序并取 Top 20
+ancombc_top20 <- ancombc_res |>
+  arrange(`q_treatment_groupApcMUT_HpWT`) |>
+  head(20)
+
+cat("\n=== ANCOM-BC Top 20 差异 OTU ===\n")
+print(ancombc_top20 |> select(taxon, Phylum, Family, `lfc_treatment_groupApcMUT_HpWT`, `q_treatment_groupApcMUT_HpWT`))
+
+# 保存结果
+write.csv(
+  ancombc_res,
+  file = here::here("data", params$name, "14_daa_ancombc_singlem_full.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  ancombc_top20,
+  file = here::here("data", params$name, "15_daa_ancombc_singlem_top20.csv"),
+  row.names = FALSE
+)
+
+# ==============================================================================
+# 火山图
+# ==============================================================================
+p_volcano <- ggplot(ancombc_res, aes(
+  x = `lfc_treatment_groupApcMUT_HpWT`,
+  y = -log10(`q_treatment_groupApcMUT_HpWT`)
+)) +
+  geom_point(aes(color = `q_treatment_groupApcMUT_HpWT` < 0.05), alpha = 0.6) +
+  scale_color_manual(values = c("grey50", "red"), labels = c("NS", "q < 0.05")) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "blue") +
+  theme_bw() +
+  labs(
+    title = "SingleM: Differential Abundance (ANCOM-BC)",
+    subtitle = "ApcMUT_HpWT vs ApcMUT_HpKO",
+    x = "Log2 Fold Change",
+    y = "-log10(q-value)",
+    color = "Significance"
+  )
+p_volcano
+
+ggsave(
+  filename = here::here("data", params$name, "16_volcano_daa_singlem.png"),
+  plot = p_volcano, width = 10, height = 8, dpi = 300
+)
+```
+
+
+# Part 2: Lyrebird 噬菌体分析
+
+Lyrebird 是 SingleM 框架内专门用于分析 dsDNA 噬菌体（Caudoviricetes）的模块。
+
+## 7. Lyrebird 数据导入与 TSE 构建
+
+```{r}
+#| label: lyrebird-data-import
+
+# ==============================================================================
+# Step 1: 定义数据路径
+# ==============================================================================
+lyrebird_data_path <- here::here(
+  "data", "00-raw", "d03_singlem_diversity_analysis", "pc047-rst_lyrebird"
+)
+
+# ==============================================================================
+# Step 2: 读取 OTU 丰度矩阵
+# ==============================================================================
+lyrebird_abundance <- read_tsv(
+  file.path(lyrebird_data_path, "pc047-lyrebird_OTU_abundance.tsv"),
+  show_col_types = FALSE
+) |>
+  column_to_rownames("otu_id") |>
+  as.matrix()
+
+# 将百分比转换为比例
+lyrebird_abundance <- lyrebird_abundance / 100
+
+cat("Lyrebird OTU 矩阵维度:", dim(lyrebird_abundance), "\n")
+
+# ==============================================================================
+# Step 3: 读取 OTU 分类信息
+# ==============================================================================
+lyrebird_taxonomy <- read_tsv(
+  file.path(lyrebird_data_path, "pc047-lyrebird_OTU_taxonomy.tsv"),
+  show_col_types = FALSE
+) |>
+  column_to_rownames("otu_id") |>
+  DataFrame()
+
+cat("Lyrebird 分类层级:", colnames(lyrebird_taxonomy), "\n")
+
+# ==============================================================================
+# Step 4: 读取系统发育树
+# ==============================================================================
+lyrebird_tree <- ape::read.tree(
+  file.path(lyrebird_data_path, "pc047-lyrebird_OTU_tree.nwk")
+)
+
+cat("Lyrebird 系统发育树 tip 数:", length(lyrebird_tree$tip.label), "\n")
+
+# ==============================================================================
+# Step 5: 构建 TSE 对象
+# ==============================================================================
+common_otus_lyrebird <- intersect(rownames(lyrebird_abundance), rownames(lyrebird_taxonomy))
+common_otus_lyrebird <- intersect(common_otus_lyrebird, lyrebird_tree$tip.label)
+
+cat("Lyrebird 共同 OTU 数:", length(common_otus_lyrebird), "\n")
+
+lyrebird_abundance <- lyrebird_abundance[common_otus_lyrebird, ]
+lyrebird_taxonomy <- lyrebird_taxonomy[common_otus_lyrebird, ]
+lyrebird_tree <- ape::keep.tip(lyrebird_tree, common_otus_lyrebird)
+
+tse_lyrebird <- TreeSummarizedExperiment(
+  assays = list(
+    relabundance = lyrebird_abundance,
+    counts = round(lyrebird_abundance * 10000)
+  ),
+  rowData = lyrebird_taxonomy,
+  rowTree = lyrebird_tree
+)
+
+# 绑定元数据
+common_samples_lyrebird <- intersect(colnames(tse_lyrebird), rownames(metadata))
+tse_lyrebird <- tse_lyrebird[, common_samples_lyrebird]
+colData(tse_lyrebird) <- DataFrame(metadata[common_samples_lyrebird, ])
+
+# 创建 Caecum 子集
+tse_lyrebird_ca <- tse_lyrebird[, tse_lyrebird$source_organ == "caecum"]
+
+cat("Lyrebird Caecum 样本数:", ncol(tse_lyrebird_ca), "\n")
+
+tse_lyrebird_ca
+```
+
+## 8. Lyrebird 数据清洗
+
+```{r}
+#| label: lyrebird-qc
+
+# ==============================================================================
+# 1. 移除异常样本 (与 SingleM 保持一致)
+# ==============================================================================
+if ("ca08" %in% colnames(tse_lyrebird_ca)) {
+  tse_lyrebird_ca <- tse_lyrebird_ca[, colnames(tse_lyrebird_ca) != "ca08"]
+}
+
+# ==============================================================================
+# 2. Prevalence 过滤
+# ==============================================================================
+tse_lyrebird_ca <- addPrevalence(
+  tse_lyrebird_ca,
+  assay.type = "relabundance",
+  detection = 0,
+  as.relative = FALSE
+)
+
+cat("Lyrebird 过滤前 OTU 数:", nrow(tse_lyrebird_ca), "\n")
+tse_lyrebird_ca <- subsetByPrevalent(tse_lyrebird_ca, prevalence = 0.1)
+cat("Lyrebird 过滤后 OTU 数:", nrow(tse_lyrebird_ca), "\n")
+
+# 保存清洗后的数据
+tse_lyrebird_ca_cleaned <- tse_lyrebird_ca
+saveRDS(
+  tse_lyrebird_ca_cleaned,
+  file = here::here("data", params$name, "tse_lyrebird_ca_cleaned.rds")
+)
+```
+
+## 9. Lyrebird 群落组成与多样性
+
+```{r}
+#| label: lyrebird-diversity
+#| fig-width: 12
+#| fig-height: 8
+
+# ==============================================================================
+# 1. 噬菌体组成图
+# ==============================================================================
+top_phages <- getTop(tse_lyrebird_ca_cleaned, top = 10, assay.type = "relabundance")
+
+tse_lyrebird_plot <- tse_lyrebird_ca_cleaned
+rowData(tse_lyrebird_plot)$Phage_Top10 <- ifelse(
+  rownames(tse_lyrebird_plot) %in% top_phages,
+  paste0(rownames(tse_lyrebird_plot), " (", rowData(tse_lyrebird_plot)$Family, ")"),
+  "Other"
+)
+
+tse_lyrebird_plot_agg <- agglomerateByVariable(tse_lyrebird_plot, by = "rows", f = "Phage_Top10")
+
+p_lyrebird_comp <- plotAbundance(
+  tse_lyrebird_plot_agg,
+  assay.type = "relabundance",
+  order.row.by = "abund"
+) +
+  labs(
+    title = "Lyrebird: Top 10 Phage OTU Composition (Caecum)",
+    subtitle = "dsDNA Phage (Caudoviricetes) communities"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
+
+p_lyrebird_comp
+
+ggsave(
+  filename = here::here("data", params$name, "17_composition_top10_lyrebird.png"),
+  plot = p_lyrebird_comp, width = 14, height = 8, dpi = 300
+)
+
+# ==============================================================================
+# 2. Alpha 多样性
+# ==============================================================================
+tse_lyrebird_ca_cleaned <- addAlpha(
+  tse_lyrebird_ca_cleaned,
+  assay.type = "counts",
+  index = c("shannon", "observed"),
+  name = c("shannon_index", "observed_richness")
+)
+
+# 提取核心比较组
+tse_lyrebird_corepair <- tse_lyrebird_ca_cleaned[
+  , tse_lyrebird_ca_cleaned$treatment_group %in% c("ApcMUT_HpWT", "ApcMUT_HpKO")
+]
+tse_lyrebird_corepair$treatment_group <- factor(tse_lyrebird_corepair$treatment_group)
+
+# Wilcoxon 检验
+wilcox_lyrebird_shannon <- wilcox.test(
+  shannon_index ~ treatment_group,
+  data = colData(tse_lyrebird_corepair)
+)
+cat("\nLyrebird Shannon Wilcoxon P 值:", round(wilcox_lyrebird_shannon$p.value, 4), "\n")
+
+# 可视化
+p_lyrebird_shannon <- plot_alpha(tse_lyrebird_corepair, "shannon_index", "Lyrebird: Shannon Diversity")
+p_lyrebird_observed <- plot_alpha(tse_lyrebird_corepair, "observed_richness", "Lyrebird: Observed Phage OTUs")
+
+p_lyrebird_alpha <- p_lyrebird_shannon + p_lyrebird_observed +
+  plot_annotation(title = "Lyrebird (Phage) Alpha Diversity")
+p_lyrebird_alpha
+
+ggsave(
+  filename = here::here("data", params$name, "18_alpha_diversity_lyrebird.png"),
+  plot = p_lyrebird_alpha, width = 12, height = 6, dpi = 300
+)
+
+# ==============================================================================
+# 3. Beta 多样性 (Bray-Curtis)
+# ==============================================================================
+tse_lyrebird_corepair <- runMDS(
+  tse_lyrebird_corepair,
+  FUN = vegan::vegdist,
+  method = "bray",
+  assay.type = "relabundance",
+  name = "PCoA_Bray"
+)
+
+eig_lyrebird_bray <- attr(reducedDim(tse_lyrebird_corepair, "PCoA_Bray"), "eig")
+rel_eig_lyrebird_bray <- eig_lyrebird_bray / sum(eig_lyrebird_bray[eig_lyrebird_bray > 0])
+
+p_lyrebird_pcoa <- plotReducedDim(
+  tse_lyrebird_corepair,
+  "PCoA_Bray",
+  colour_by = "treatment_group"
+) +
+  theme_bw() +
+  labs(
+    title = "Lyrebird: PCoA (Bray-Curtis)",
+    subtitle = "Phage community structure",
+    x = paste0("PCoA 1 (", round(100 * rel_eig_lyrebird_bray[1], 1), "%)"),
+    y = paste0("PCoA 2 (", round(100 * rel_eig_lyrebird_bray[2], 1), "%)")
+  )
+p_lyrebird_pcoa
+
+ggsave(
+  filename = here::here("data", params$name, "19_beta_pcoa_bray_lyrebird.png"),
+  plot = p_lyrebird_pcoa, width = 8, height = 6, dpi = 300
+)
+
+# PERMANOVA
+permanova_lyrebird <- getPERMANOVA(
+  tse_lyrebird_corepair,
+  assay.type = "relabundance",
+  formula = x ~ treatment_group
+)
+
+cat("\n=== Lyrebird PERMANOVA (Bray-Curtis) ===\n")
+print(permanova_lyrebird$permanova)
+
+write.csv(
+  permanova_lyrebird$permanova,
+  file = here::here("data", params$name, "20_permanova_bray_lyrebird.csv"),
+  row.names = TRUE
+)
+```
+
+# Part 3: 结果汇总
+
+## 10. SingleM vs Bracken 结果比较
+
+```{r}
+#| label: summary-comparison
+
+# ==============================================================================
+# 创建结果汇总表
+# ==============================================================================
+summary_table <- data.frame(
+  Analysis = c(
+    "Alpha Diversity (Shannon)",
+    "Alpha Diversity (Observed)",
+    "Beta Diversity (Bray-Curtis)",
+    "Beta Diversity (Weighted UniFrac)",
+    "Beta Diversity (Unweighted UniFrac)"
+  ),
+  SingleM_P_value = c(
+    round(wilcox_shannon$p.value, 4),
+    round(wilcox_observed$p.value, 4),
+    round(permanova_bray$permanova$`Pr(>F)`[1], 4),
+    round(permanova_wunifrac$`Pr(>F)`[1], 4),
+    round(permanova_uwunifrac$`Pr(>F)`[1], 4)
+  ),
+  Bracken_P_value = c(
+    0.73, # 来自 01 分析
+    0.29, # 来自 01 分析
+    0.012, # 来自 01 分析
+    NA, # Bracken 无系统发育树
+    NA # Bracken 无系统发育树
+  )
+)
+
+cat("\n=== SingleM vs Bracken 结果比较 ===\n")
+print(summary_table)
+
+write.csv(
+  summary_table,
+  file = here::here("data", params$name, "21_singlem_vs_bracken_comparison.csv"),
+  row.names = FALSE
+)
+```
+
+## 11. 分析小结
+
+```{r}
+#| label: analysis-summary
+#| results: asis
+
+cat("
+## SingleM/Lyrebird 分析小结
+
+### Part 1: SingleM 细菌/古菌分析
+
+**数据概况**:
+- 清洗后 OTU 数: ", nrow(tse_singlem_ca_cleaned), "
+- 样本数: ", ncol(tse_singlem_ca_cleaned), "
+- 核心比较组: ApcMUT_HpWT (n=", sum(tse_singlem_corepair$treatment_group == 'ApcMUT_HpWT'), ") vs ApcMUT_HpKO (n=", sum(tse_singlem_corepair$treatment_group == 'ApcMUT_HpKO'), ")
+
+**关键发现**:
+1. **Alpha 多样性**: Shannon P=", round(wilcox_shannon$p.value, 4), ", Observed P=", round(wilcox_observed$p.value, 4), "
+2. **Beta 多样性 (Bray-Curtis)**: PERMANOVA P=", round(permanova_bray$permanova$`Pr(>F)`[1], 4), "
+3. **Beta 多样性 (Weighted UniFrac)**: PERMANOVA P=", round(permanova_wunifrac$`Pr(>F)`[1], 4), "
+4. **Beta 多样性 (Unweighted UniFrac)**: PERMANOVA P=", round(permanova_uwunifrac$`Pr(>F)`[1], 4), "
+
+### Part 2: Lyrebird 噬菌体分析
+
+**数据概况**:
+- 清洗后噬菌体 OTU 数: ", nrow(tse_lyrebird_ca_cleaned), "
+
+**关键发现**:
+1. **Alpha 多样性**: Shannon P=", round(wilcox_lyrebird_shannon$p.value, 4), "
+2. **Beta 多样性**: PERMANOVA P=", round(permanova_lyrebird$permanova$`Pr(>F)`[1], 4), "
+
+### SingleM 相比 Bracken 的优势
+
+1. **UniFrac 距离**: SingleM 提供系统发育树，可计算考虑进化关系的 UniFrac 距离
+2. **新物种检测**: SingleM 基于标记基因 HMM，能检测数据库中未收录的物种
+3. **OTU 分辨率**: 更细粒度的群落结构分析
+")
+```
+
+---
+
+## Files written
+
+These files have been written to the target directory, `r paste0("data/", params$name)`:
+
+```{r}
+#| label: list-files-target
+#| include: false
+projthis::proj_dir_info(path_target(), tz = "CET")
+```
