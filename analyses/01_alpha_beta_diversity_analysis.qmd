@@ -580,7 +580,20 @@ taxonomyRanks(tse_standard_species_ca_cleaned) # "Genus"   "Species"
 tse_standard_genus_ca_originfrom_standardspeciescacleaned <- agglomerateByRank(tse_standard_species_ca_cleaned, rank = "Genus")
 tse_standard_genus_ca_originfrom_standardspeciescacleaned
 
-
+# ------------------------------------------------------------------------------
+# 3. 保存清洗后的 TSE 对象（供 02qmd 等后续分析使用）
+# ------------------------------------------------------------------------------
+saveRDS(
+  tse_standard_species_ca_cleaned,
+  file = here::here("data", "01_alpha_beta_diversity_analysis", "tse_standard_species_ca_cleaned.rds")
+)
+saveRDS(
+  tse_standard_genus_ca_originfrom_standardspeciescacleaned,
+  file = here::here("data", "01_alpha_beta_diversity_analysis", "tse_standard_genus_ca_cleaned.rds")
+)
+cat("✅ 已保存 TSE 对象:\n")
+cat("  - tse_standard_species_ca_cleaned.rds\n")
+cat("  - tse_standard_genus_ca_cleaned.rds\n")
 ```
 
 ## 3.数据分析
