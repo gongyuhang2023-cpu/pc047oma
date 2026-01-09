@@ -195,13 +195,11 @@ cat("样本名:", paste(head(colnames(pathway_matrix), 5), collapse = ", "), "..
 ```{r}
 #| label: load-metadata
 
-# 从01文档保存的TSE中读取元数据
-tse_species <- readRDS(
-  here::here("data", "01_alpha_beta_diversity_analysis", "tse_standard_species_ca_cleaned.rds")
-)
-
-# 提取元数据
-metadata <- as.data.frame(colData(tse_species))
+# 直接从项目通用的 metadata 文件读取（不依赖 01qmd）
+metadata <- readxl::read_xlsx(
+  here::here("data", "metadata", "pc047-metadata.xlsx")
+) |>
+  column_to_rownames("sample_id")
 
 # 确保样本名一致
 common_samples <- base::intersect(colnames(pathway_matrix), rownames(metadata))
@@ -213,7 +211,7 @@ metadata <- metadata[common_samples, ]
 
 # 查看分组信息
 cat("\n样本分组:\n")
-print(table(metadata$cag_hpstatus))
+print(table(metadata$treatment_group))
 ```
 
 ### 1.5 创建TreeSummarizedExperiment对象
@@ -1752,13 +1750,12 @@ cat("移除全零行后KO数:", nrow(ko_matrix_filtered), "\n")
 # 创建TSE对象
 # ------------------------------------------------------------------------------
 
-# 加载元数据（与Part 1一致，从已保存的TSE中读取）
-# 这确保了treatment_group等处理后的列存在
-tse_species_for_ko <- readRDS(
-  here::here("data", "01_alpha_beta_diversity_analysis", "tse_standard_species_ca_cleaned.rds")
-)
-sample_metadata_ko <- as.data.frame(colData(tse_species_for_ko))
-sample_metadata_ko$sample_id <- rownames(sample_metadata_ko)
+# 直接从项目通用的 metadata 文件读取（不依赖 01qmd）
+sample_metadata_ko <- readxl::read_xlsx(
+  here::here("data", "metadata", "pc047-metadata.xlsx")
+) |>
+  as.data.frame()
+rownames(sample_metadata_ko) <- sample_metadata_ko$sample_id
 
 cat("元数据维度:", nrow(sample_metadata_ko), "x", ncol(sample_metadata_ko), "\n")
 cat("元数据列名:", paste(head(colnames(sample_metadata_ko), 10), collapse = ", "), "...\n")
@@ -2248,32 +2245,42 @@ cat("3. 特定代谢功能的微生物差异\n")
 
 ## 6.1 加载物种数据
 
+> **注意**: 此部分分析需要 01qmd 生成的物种丰度数据。如果文件不存在，将自动跳过 Taxa-KO 关联分析。
+
 ```{r}
 #| label: load-taxa-data
 
 # ------------------------------------------------------------------------------
-# 加载01分析的物种数据
+# 加载01分析的物种数据（可选，文件不存在则跳过）
 # ------------------------------------------------------------------------------
 
-# 加载物种TSE
-tse_species_full <- readRDS(
-  here::here("data", "01_alpha_beta_diversity_analysis", "tse_standard_species_ca_cleaned.rds")
-)
+species_rds_path <- here::here("data", "01_alpha_beta_diversity_analysis", "tse_standard_species_ca_cleaned.rds")
+taxa_ko_analysis_available <- file.exists(species_rds_path)
 
-cat("=== 物种数据概览 ===\n")
-cat("物种数:", nrow(tse_species_full), "\n")
-cat("样本数:", ncol(tse_species_full), "\n")
+if (taxa_ko_analysis_available) {
+  tse_species_full <- readRDS(species_rds_path)
 
-# 筛选核心比较组样本
-tse_species_corepair <- tse_species_full[, tse_species_full$treatment_group %in% c("ApcMUT_HpWT", "ApcMUT_HpKO")]
+  cat("=== 物种数据概览 ===\n")
+  cat("物种数:", nrow(tse_species_full), "\n")
+  cat("样本数:", ncol(tse_species_full), "\n")
 
-cat("\n筛选核心比较组后:\n")
-cat("样本数:", ncol(tse_species_corepair), "\n")
-print(table(colData(tse_species_corepair)$treatment_group))
+  # 筛选核心比较组样本
+  tse_species_corepair <- tse_species_full[, tse_species_full$treatment_group %in% c("ApcMUT_HpWT", "ApcMUT_HpKO")]
+
+  cat("\n筛选核心比较组后:\n")
+  cat("样本数:", ncol(tse_species_corepair), "\n")
+  print(table(colData(tse_species_corepair)$treatment_group))
+} else {
+  cat("=== 物种数据不可用 ===\n")
+  cat("文件不存在:", species_rds_path, "\n")
+  cat("Taxa-KO 关联分析将被跳过\n")
+  cat("\n如需运行此分析，请先运行 01_alpha_beta_diversity_analysis.qmd\n")
+}
 ```
 
 ```{r}
 #| label: prepare-taxa-for-correlation
+#| eval: !expr taxa_ko_analysis_available
 
 # ------------------------------------------------------------------------------
 # 准备物种数据用于关联分析
@@ -2319,6 +2326,7 @@ print(head(rownames(tse_species_filtered), 20))
 
 ```{r}
 #| label: prepare-ko-for-correlation
+#| eval: !expr taxa_ko_analysis_available
 
 # ------------------------------------------------------------------------------
 # 准备KO数据用于关联分析
@@ -2434,6 +2442,7 @@ cat("相关性范围:", round(min(cor_matrix, na.rm = TRUE), 3), "to",
 
 ```{r}
 #| label: calculate-correlation-pvalues
+#| eval: !expr taxa_ko_analysis_available
 
 # ------------------------------------------------------------------------------
 # 计算相关性的p值
@@ -2475,6 +2484,7 @@ cat("显著关联数 (FDR < 0.25):", n_sig_025, "\n")
 
 ```{r}
 #| label: taxa-ko-heatmap
+#| eval: !expr taxa_ko_analysis_available
 #| fig-width: 14
 #| fig-height: 12
 
@@ -2643,6 +2653,7 @@ cat("\n✓ 物种-KO关联表已保存\n")
 
 ```{r}
 #| label: association-network
+#| eval: !expr taxa_ko_analysis_available
 #| fig-width: 12
 #| fig-height: 10
 
@@ -2773,6 +2784,7 @@ if (nrow(strong_associations) >= 5) {
 
 ```{r}
 #| label: integrate-differential-taxa
+#| eval: !expr taxa_ko_analysis_available
 
 # ------------------------------------------------------------------------------
 # 查看01分析中的差异物种与功能的关联
