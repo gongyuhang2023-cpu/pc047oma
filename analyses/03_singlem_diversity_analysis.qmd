@@ -884,7 +884,7 @@ cat("  Q 值列:", q_col, "\n")
 
 # 添加分类信息
 ancombc_res <- ancombc_res |>
-  left_join(
+  dplyr::left_join(
     rowData(tse_daa) |> as.data.frame() |> rownames_to_column("taxon"),
     by = "taxon"
   )
@@ -895,7 +895,7 @@ ancombc_top20 <- ancombc_res |>
   head(20)
 
 cat("\n=== ANCOM-BC Top 20 差异 OTU ===\n")
-print(ancombc_top20 |> select(taxon, Phylum, Family, all_of(c(lfc_col, q_col))))
+print(ancombc_top20 |> dplyr::select(taxon, Phylum, Family, all_of(c(lfc_col, q_col))))
 
 # 保存结果
 write.csv(
@@ -1455,7 +1455,7 @@ cat("  Q 值列:", q_col_lyrebird, "\n")
 
 # 添加分类信息
 ancombc_res_lyrebird <- ancombc_res_lyrebird |>
-  left_join(
+  dplyr::left_join(
     rowData(tse_daa_lyrebird) |> as.data.frame() |> rownames_to_column("taxon"),
     by = "taxon"
   )
@@ -1466,7 +1466,7 @@ ancombc_top20_lyrebird <- ancombc_res_lyrebird |>
   head(20)
 
 cat("\n=== Lyrebird ANCOM-BC Top 20 差异噬菌体 OTU ===\n")
-print(ancombc_top20_lyrebird |> select(taxon, Family, all_of(c(lfc_col_lyrebird, q_col_lyrebird))))
+print(ancombc_top20_lyrebird |> dplyr::select(taxon, Family, all_of(c(lfc_col_lyrebird, q_col_lyrebird))))
 
 # 保存完整结果
 write.csv(
