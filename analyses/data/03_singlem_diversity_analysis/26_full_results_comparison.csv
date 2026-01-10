@@ -1,6 +1,0 @@
-"Analysis","SingleM","Lyrebird","Bracken"
-"Alpha: Shannon (Wilcoxon)",0.9048,0.0317,0.73
-"Alpha: Observed (Wilcoxon)",0.1111,NA,0.29
-"Beta: Bray-Curtis (PERMANOVA)",0.037,0.057,0.012
-"Beta: Weighted UniFrac (PERMANOVA)",0.029,0.05,NA
-"Beta: Unweighted UniFrac (PERMANOVA)",0.008,0.043,NA

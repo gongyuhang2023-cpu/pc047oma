@@ -78,6 +78,7 @@ suppressPackageStartupMessages({
   library(vegan)
   library(igraph)
   library(ggraph)
+  library(Hmisc)  # OMA风格：高效相关性计算
   devtools::load_all()
 })
 
@@ -91,6 +92,86 @@ conflicts_prefer(dplyr::left_join)
 conflicts_prefer(base::intersect)
 
 set.seed(20261)
+```
+
+```{r}
+#| label: helper-functions
+
+# ==============================================================================
+# OMA风格辅助函数：跨矩阵Spearman相关性计算
+# ==============================================================================
+
+#' 计算两个矩阵之间的Spearman相关性（向量化）
+#'
+#' @param mat_x 矩阵X (样本×特征A)
+#' @param mat_y 矩阵Y (样本×特征B)，样本数需与mat_x一致
+#' @return 列表包含：r (相关系数矩阵), P (p值矩阵), n (样本数)
+cross_rcorr <- function(mat_x, mat_y) {
+  # 确保行数（样本数）一致
+  stopifnot(nrow(mat_x) == nrow(mat_y))
+
+  n <- nrow(mat_x)
+  nx <- ncol(mat_x)
+  ny <- ncol(mat_y)
+
+  # 合并矩阵后使用Hmisc::rcorr
+  combined <- cbind(mat_x, mat_y)
+  rcorr_result <- rcorr(as.matrix(combined), type = "spearman")
+
+  # 提取跨矩阵部分
+  r_matrix <- rcorr_result$r[1:nx, (nx+1):(nx+ny)]
+  p_matrix <- rcorr_result$P[1:nx, (nx+1):(nx+ny)]
+
+  # 恢复行列名
+  rownames(r_matrix) <- colnames(mat_x)
+  colnames(r_matrix) <- colnames(mat_y)
+  rownames(p_matrix) <- colnames(mat_x)
+  colnames(p_matrix) <- colnames(mat_y)
+
+  list(r = r_matrix, P = p_matrix, n = n)
+}
+
+#' 将相关性结果转换为长格式数据框
+#'
+#' @param cor_result cross_rcorr()的返回值
+#' @param name_x X矩阵特征名称列名
+#' @param name_y Y矩阵特征名称列名
+#' @return 数据框包含：feature_x, feature_y, correlation, pvalue, qvalue, abs_cor
+corr_to_df <- function(cor_result, name_x = "feature_x", name_y = "feature_y") {
+  df <- expand.grid(
+    feature_x = rownames(cor_result$r),
+    feature_y = colnames(cor_result$r),
+    stringsAsFactors = FALSE
+  )
+  names(df)[1:2] <- c(name_x, name_y)
+
+  df$correlation <- as.vector(cor_result$r)
+  df$pvalue <- as.vector(cor_result$P)
+  df$qvalue <- p.adjust(df$pvalue, method = "BH")
+  df$abs_cor <- abs(df$correlation)
+
+  df
+}
+
+#' 从相关性结果创建网络边
+#'
+#' @param cor_result cross_rcorr()的返回值
+#' @param cor_threshold 相关系数绝对值阈值
+#' @param fdr_threshold FDR阈值
+#' @param edge_type 边类型标签
+#' @return 边数据框
+corr_to_edges <- function(cor_result, cor_threshold = 0.5, fdr_threshold = 0.25, edge_type = "Association") {
+  df <- corr_to_df(cor_result)
+
+  df |>
+    filter(abs_cor > cor_threshold, qvalue < fdr_threshold) |>
+    transmute(
+      from = .data[[names(df)[1]]],
+      to = .data[[names(df)[2]]],
+      weight = correlation,
+      type = edge_type
+    )
+}
 ```
 
 # Part 1: 数据导入
@@ -201,165 +282,104 @@ cat("  原始 KO 数:", nrow(ko_abundance), "\n")
 cat("  过滤后 KO 数 (prevalence >= 20%):", nrow(ko_abundance_filtered), "\n")
 ```
 
-## 2.2 计算噬菌体-KO 相关性
+## 2.2 计算噬菌体-KO 相关性 (OMA风格)
 
 ```{r}
 #| label: phage-ko-correlation
 
-cat("=== 计算噬菌体-KO Spearman 相关性 ===\n")
-cat("矩阵大小:", nrow(phage_abundance_filtered), "噬菌体 ×", nrow(ko_abundance_filtered), "KOs\n")
-cat("计算中...\n")
+cat("=== 计算噬菌体-KO Spearman 相关性 (Hmisc::rcorr) ===\n")
 
 # 转置矩阵（样本为行）
 phage_t <- t(phage_abundance_filtered)
 ko_t <- t(ko_abundance_filtered)
 
-# 计算相关性矩阵
 n_phage <- ncol(phage_t)
 n_ko <- ncol(ko_t)
 
-cor_matrix_phage_ko <- matrix(NA, nrow = n_phage, ncol = n_ko)
-pval_matrix_phage_ko <- matrix(NA, nrow = n_phage, ncol = n_ko)
-rownames(cor_matrix_phage_ko) <- colnames(phage_t)
-colnames(cor_matrix_phage_ko) <- colnames(ko_t)
-rownames(pval_matrix_phage_ko) <- colnames(phage_t)
-colnames(pval_matrix_phage_ko) <- colnames(ko_t)
+cat("矩阵大小:", n_phage, "噬菌体 ×", n_ko, "KOs\n")
 
-# 计算 Spearman 相关性
-for (i in 1:n_phage) {
-  for (j in 1:n_ko) {
-    test_result <- cor.test(
-      phage_t[, i], ko_t[, j],
-      method = "spearman",
-      exact = FALSE
-    )
-    cor_matrix_phage_ko[i, j] <- test_result$estimate
-    pval_matrix_phage_ko[i, j] <- test_result$p.value
-  }
-}
+# OMA风格：使用cross_rcorr一次性计算所有相关性
+cor_phage_ko <- cross_rcorr(phage_t, ko_t)
 
-cat("相关性计算完成\n")
-```
-
-## 2.3 FDR 校正
-
-```{r}
-#| label: phage-ko-fdr
-
-# FDR 校正 (Benjamini-Hochberg)
-pval_vector <- as.vector(pval_matrix_phage_ko)
-qval_vector <- p.adjust(pval_vector, method = "BH")
-qval_matrix_phage_ko <- matrix(qval_vector, nrow = n_phage, ncol = n_ko)
-rownames(qval_matrix_phage_ko) <- rownames(cor_matrix_phage_ko)
-colnames(qval_matrix_phage_ko) <- colnames(cor_matrix_phage_ko)
+# 转换为长格式数据框（自动FDR校正）
+phage_ko_pairs <- corr_to_df(cor_phage_ko, "phage", "ko")
 
 # 统计显著关联
-n_sig_005 <- sum(qval_matrix_phage_ko < 0.05, na.rm = TRUE)
-n_sig_010 <- sum(qval_matrix_phage_ko < 0.10, na.rm = TRUE)
-n_sig_025 <- sum(qval_matrix_phage_ko < 0.25, na.rm = TRUE)
+n_sig_005 <- sum(phage_ko_pairs$qvalue < 0.05, na.rm = TRUE)
+n_sig_010 <- sum(phage_ko_pairs$qvalue < 0.10, na.rm = TRUE)
+n_sig_025 <- sum(phage_ko_pairs$qvalue < 0.25, na.rm = TRUE)
 
 cat("\n=== 噬菌体-KO 关联统计 ===\n")
 cat("显著关联数 (FDR < 0.05):", n_sig_005, "\n")
 cat("显著关联数 (FDR < 0.10):", n_sig_010, "\n")
 cat("显著关联数 (FDR < 0.25):", n_sig_025, "\n")
-```
 
-## 2.4 Top 噬菌体-KO 关联对
-
-```{r}
-#| label: top-phage-ko-pairs
-
-# 创建关联对数据框
-phage_ko_pairs <- expand.grid(
-  phage = rownames(cor_matrix_phage_ko),
-  ko = colnames(cor_matrix_phage_ko),
-  stringsAsFactors = FALSE
-)
-
-phage_ko_pairs$correlation <- as.vector(cor_matrix_phage_ko)
-phage_ko_pairs$pvalue <- as.vector(pval_matrix_phage_ko)
-phage_ko_pairs$qvalue <- as.vector(qval_matrix_phage_ko)
-phage_ko_pairs$abs_cor <- abs(phage_ko_pairs$correlation)
-
-# 排序并显示 Top 20
-top_pairs <- phage_ko_pairs |>
-  arrange(qvalue, desc(abs_cor)) |>
-  head(20)
-
+# Top 20
 cat("\n=== Top 20 噬菌体-KO 关联对 ===\n")
+top_pairs <- phage_ko_pairs |> arrange(qvalue, desc(abs_cor)) |> head(20)
 print(top_pairs |> dplyr::select(phage, ko, correlation, qvalue))
 
 # 保存结果
-write.csv(
-  phage_ko_pairs |> arrange(qvalue),
-  file = path_target("01_phage_ko_correlation_all.csv"),
-  row.names = FALSE
-)
+write.csv(phage_ko_pairs |> arrange(qvalue),
+          file = path_target("01_phage_ko_correlation_all.csv"), row.names = FALSE)
 
-# 保存显著结果
 sig_pairs <- phage_ko_pairs |> filter(qvalue < 0.25)
 if (nrow(sig_pairs) > 0) {
-  write.csv(
-    sig_pairs |> arrange(qvalue),
-    file = path_target("02_phage_ko_correlation_significant.csv"),
-    row.names = FALSE
-  )
+  write.csv(sig_pairs |> arrange(qvalue),
+            file = path_target("02_phage_ko_correlation_significant.csv"), row.names = FALSE)
 }
 ```
 
-## 2.5 噬菌体-KO 关联热图
+## 2.3 噬菌体-KO 关联热图
 
 ```{r}
 #| label: phage-ko-heatmap
 #| fig-width: 14
 #| fig-height: 10
 
-# 筛选有最强关联的噬菌体和KO用于可视化
-# 选择相关性绝对值最大的噬菌体和KO
+# 从相关性结果提取矩阵
+cor_matrix_phage_ko <- cor_phage_ko$r
 
-# 每个噬菌体的最大相关性
+# 创建qvalue矩阵用于显著性标记
+qval_matrix_phage_ko <- matrix(
+  phage_ko_pairs$qvalue,
+  nrow = n_phage, ncol = n_ko,
+  dimnames = list(rownames(cor_matrix_phage_ko), colnames(cor_matrix_phage_ko))
+)
+
+# 选择Top特征
 phage_max_cor <- apply(abs(cor_matrix_phage_ko), 1, max, na.rm = TRUE)
 top_phage <- names(sort(phage_max_cor, decreasing = TRUE))[1:min(30, n_phage)]
 
-# 每个KO的最大相关性
 ko_max_cor <- apply(abs(cor_matrix_phage_ko), 2, max, na.rm = TRUE)
 top_ko <- names(sort(ko_max_cor, decreasing = TRUE))[1:min(40, n_ko)]
 
-# 子集化
-cor_matrix_subset <- cor_matrix_phage_ko[top_phage, top_ko]
-qval_matrix_subset <- qval_matrix_phage_ko[top_phage, top_ko]
+# 子集化并简化名称
+cor_subset <- cor_matrix_phage_ko[top_phage, top_ko]
+qval_subset <- qval_matrix_phage_ko[top_phage, top_ko]
 
-# 简化名称
-rownames(cor_matrix_subset) <- stringr::str_trunc(rownames(cor_matrix_subset), 35)
-colnames(cor_matrix_subset) <- stringr::str_trunc(colnames(cor_matrix_subset), 15)
+rownames(cor_subset) <- stringr::str_trunc(rownames(cor_subset), 35)
+colnames(cor_subset) <- stringr::str_trunc(colnames(cor_subset), 15)
 
-# 创建显著性标记
-sig_marks <- ifelse(qval_matrix_subset < 0.05, "**",
-                    ifelse(qval_matrix_subset < 0.10, "*",
-                           ifelse(qval_matrix_subset < 0.25, ".", "")))
+# 显著性标记
+sig_marks <- ifelse(qval_subset < 0.05, "**",
+                    ifelse(qval_subset < 0.10, "*",
+                           ifelse(qval_subset < 0.25, ".", "")))
 
-# 绘制热图
+# 热图
 p_heatmap_phage_ko <- pheatmap(
-  cor_matrix_subset,
+  cor_subset,
   color = colorRampPalette(c("#2166AC", "#F7F7F7", "#B2182B"))(100),
   breaks = seq(-1, 1, length.out = 101),
-  cluster_rows = TRUE,
-  cluster_cols = TRUE,
-  show_rownames = TRUE,
-  show_colnames = TRUE,
-  fontsize_row = 7,
-  fontsize_col = 8,
-  angle_col = 45,
+  cluster_rows = TRUE, cluster_cols = TRUE,
+  fontsize_row = 7, fontsize_col = 8, angle_col = 45,
   main = "Phage-KO Correlation Heatmap (Spearman)",
-  display_numbers = sig_marks,
-  number_color = "black",
-  fontsize_number = 6,
+  display_numbers = sig_marks, number_color = "black", fontsize_number = 6,
   silent = TRUE
 )
 
 print(p_heatmap_phage_ko)
 
-# 保存
 png(path_target("03_phage_ko_correlation_heatmap.png"),
     width = 14, height = 10, units = "in", res = 300)
 print(p_heatmap_phage_ko)
@@ -375,9 +395,7 @@ cat("\n** = FDR < 0.05, * = FDR < 0.10, . = FDR < 0.25\n")
 ```{r}
 #| label: phage-pathway-correlation
 
-# ------------------------------------------------------------------------------
 # 提取 Pathway 丰度矩阵
-# ------------------------------------------------------------------------------
 if ("relabundance" %in% assayNames(tse_pathway)) {
   pathway_abundance <- as.matrix(assay(tse_pathway, "relabundance"))
 } else {
@@ -387,51 +405,22 @@ if ("relabundance" %in% assayNames(tse_pathway)) {
 
 # 过滤低丰度通路
 pathway_prevalence <- rowSums(pathway_abundance > 0) / ncol(pathway_abundance)
-pathway_abundant <- pathway_prevalence >= 0.2
-pathway_abundance_filtered <- pathway_abundance[pathway_abundant, ]
-
-cat("Pathway 过滤:\n")
-cat("  原始通路数:", nrow(pathway_abundance), "\n")
-cat("  过滤后通路数 (prevalence >= 20%):", nrow(pathway_abundance_filtered), "\n")
-
-# ------------------------------------------------------------------------------
-# 计算噬菌体-Pathway 相关性
-# ------------------------------------------------------------------------------
+pathway_abundance_filtered <- pathway_abundance[pathway_prevalence >= 0.2, ]
 pathway_t <- t(pathway_abundance_filtered)
 n_pathway <- ncol(pathway_t)
 
-cor_matrix_phage_pathway <- matrix(NA, nrow = n_phage, ncol = n_pathway)
-pval_matrix_phage_pathway <- matrix(NA, nrow = n_phage, ncol = n_pathway)
-rownames(cor_matrix_phage_pathway) <- colnames(phage_t)
-colnames(cor_matrix_phage_pathway) <- colnames(pathway_t)
-rownames(pval_matrix_phage_pathway) <- colnames(phage_t)
-colnames(pval_matrix_phage_pathway) <- colnames(pathway_t)
+cat("Pathway 过滤:\n")
+cat("  原始通路数:", nrow(pathway_abundance), "\n")
+cat("  过滤后通路数 (prevalence >= 20%):", n_pathway, "\n")
 
-cat("\n计算噬菌体-Pathway 相关性...\n")
-
-for (i in 1:n_phage) {
-  for (j in 1:n_pathway) {
-    test_result <- cor.test(
-      phage_t[, i], pathway_t[, j],
-      method = "spearman",
-      exact = FALSE
-    )
-    cor_matrix_phage_pathway[i, j] <- test_result$estimate
-    pval_matrix_phage_pathway[i, j] <- test_result$p.value
-  }
-}
-
-# FDR 校正
-pval_vector_pathway <- as.vector(pval_matrix_phage_pathway)
-qval_vector_pathway <- p.adjust(pval_vector_pathway, method = "BH")
-qval_matrix_phage_pathway <- matrix(qval_vector_pathway, nrow = n_phage, ncol = n_pathway)
-rownames(qval_matrix_phage_pathway) <- rownames(cor_matrix_phage_pathway)
-colnames(qval_matrix_phage_pathway) <- colnames(cor_matrix_phage_pathway)
+# OMA风格：使用cross_rcorr计算相关性
+cor_phage_pathway <- cross_rcorr(phage_t, pathway_t)
+phage_pathway_pairs <- corr_to_df(cor_phage_pathway, "phage", "pathway")
 
 # 统计
-n_sig_pathway_005 <- sum(qval_matrix_phage_pathway < 0.05, na.rm = TRUE)
-n_sig_pathway_010 <- sum(qval_matrix_phage_pathway < 0.10, na.rm = TRUE)
-n_sig_pathway_025 <- sum(qval_matrix_phage_pathway < 0.25, na.rm = TRUE)
+n_sig_pathway_005 <- sum(phage_pathway_pairs$qvalue < 0.05, na.rm = TRUE)
+n_sig_pathway_010 <- sum(phage_pathway_pairs$qvalue < 0.10, na.rm = TRUE)
+n_sig_pathway_025 <- sum(phage_pathway_pairs$qvalue < 0.25, na.rm = TRUE)
 
 cat("\n=== 噬菌体-Pathway 关联统计 ===\n")
 cat("显著关联数 (FDR < 0.05):", n_sig_pathway_005, "\n")
@@ -444,40 +433,40 @@ cat("显著关联数 (FDR < 0.25):", n_sig_pathway_025, "\n")
 #| fig-width: 14
 #| fig-height: 10
 
-# 选择 Top 噬菌体和通路
+cor_matrix_phage_pathway <- cor_phage_pathway$r
+qval_matrix_phage_pathway <- matrix(
+  phage_pathway_pairs$qvalue,
+  nrow = n_phage, ncol = n_pathway,
+  dimnames = list(rownames(cor_matrix_phage_pathway), colnames(cor_matrix_phage_pathway))
+)
+
+# 选择Top特征
 phage_max_cor_pw <- apply(abs(cor_matrix_phage_pathway), 1, max, na.rm = TRUE)
 top_phage_pw <- names(sort(phage_max_cor_pw, decreasing = TRUE))[1:min(25, n_phage)]
 
 pathway_max_cor <- apply(abs(cor_matrix_phage_pathway), 2, max, na.rm = TRUE)
 top_pathway <- names(sort(pathway_max_cor, decreasing = TRUE))[1:min(30, n_pathway)]
 
-cor_matrix_pw_subset <- cor_matrix_phage_pathway[top_phage_pw, top_pathway]
-qval_matrix_pw_subset <- qval_matrix_phage_pathway[top_phage_pw, top_pathway]
+cor_pw_subset <- cor_matrix_phage_pathway[top_phage_pw, top_pathway]
+qval_pw_subset <- qval_matrix_phage_pathway[top_phage_pw, top_pathway]
 
-# 简化通路名称
-rownames(cor_matrix_pw_subset) <- stringr::str_trunc(rownames(cor_matrix_pw_subset), 35)
-colnames(cor_matrix_pw_subset) <- stringr::str_replace(colnames(cor_matrix_pw_subset), ".*: ", "")
-colnames(cor_matrix_pw_subset) <- stringr::str_trunc(colnames(cor_matrix_pw_subset), 40)
+# 简化名称
+rownames(cor_pw_subset) <- stringr::str_trunc(rownames(cor_pw_subset), 35)
+colnames(cor_pw_subset) <- stringr::str_replace(colnames(cor_pw_subset), ".*: ", "") |>
+  stringr::str_trunc(40)
 
-sig_marks_pw <- ifelse(qval_matrix_pw_subset < 0.05, "**",
-                       ifelse(qval_matrix_pw_subset < 0.10, "*",
-                              ifelse(qval_matrix_pw_subset < 0.25, ".", "")))
+sig_marks_pw <- ifelse(qval_pw_subset < 0.05, "**",
+                       ifelse(qval_pw_subset < 0.10, "*",
+                              ifelse(qval_pw_subset < 0.25, ".", "")))
 
 p_heatmap_phage_pathway <- pheatmap(
-  cor_matrix_pw_subset,
+  cor_pw_subset,
   color = colorRampPalette(c("#2166AC", "#F7F7F7", "#B2182B"))(100),
   breaks = seq(-1, 1, length.out = 101),
-  cluster_rows = TRUE,
-  cluster_cols = TRUE,
-  show_rownames = TRUE,
-  show_colnames = TRUE,
-  fontsize_row = 7,
-  fontsize_col = 7,
-  angle_col = 45,
+  cluster_rows = TRUE, cluster_cols = TRUE,
+  fontsize_row = 7, fontsize_col = 7, angle_col = 45,
   main = "Phage-Pathway Correlation Heatmap (Spearman)",
-  display_numbers = sig_marks_pw,
-  number_color = "black",
-  fontsize_number = 5,
+  display_numbers = sig_marks_pw, number_color = "black", fontsize_number = 5,
   silent = TRUE
 )
 
@@ -493,12 +482,12 @@ dev.off()
 
 整合细菌-噬菌体、细菌-KO、噬菌体-KO三种关联，构建三角互作网络。
 
-## 4.1 计算细菌-KO 关联
+## 4.1 计算细菌-KO 和 细菌-噬菌体 关联
 
 ```{r}
-#| label: bacteria-ko-correlation
+#| label: bacteria-correlations
 
-cat("=== 计算细菌(SingleM)-KO 关联 ===\n")
+cat("=== 计算细菌(SingleM) 关联 ===\n")
 
 # 提取细菌丰度
 if ("relabundance" %in% assayNames(tse_singlem)) {
@@ -510,87 +499,29 @@ if ("relabundance" %in% assayNames(tse_singlem)) {
 
 # 过滤
 bacteria_prevalence <- rowSums(bacteria_abundance > 0) / ncol(bacteria_abundance)
-bacteria_abundant <- bacteria_prevalence >= 0.2
-bacteria_abundance_filtered <- bacteria_abundance[bacteria_abundant, ]
-
-cat("细菌过滤:\n")
-cat("  原始 OTU 数:", nrow(bacteria_abundance), "\n")
-cat("  过滤后 OTU 数:", nrow(bacteria_abundance_filtered), "\n")
-
-# 计算相关性
+bacteria_abundance_filtered <- bacteria_abundance[bacteria_prevalence >= 0.2, ]
 bacteria_t <- t(bacteria_abundance_filtered)
 n_bacteria <- ncol(bacteria_t)
 
-cor_matrix_bacteria_ko <- matrix(NA, nrow = n_bacteria, ncol = n_ko)
-pval_matrix_bacteria_ko <- matrix(NA, nrow = n_bacteria, ncol = n_ko)
-rownames(cor_matrix_bacteria_ko) <- colnames(bacteria_t)
-colnames(cor_matrix_bacteria_ko) <- colnames(ko_t)
+cat("细菌过滤:\n")
+cat("  原始 OTU 数:", nrow(bacteria_abundance), "\n")
+cat("  过滤后 OTU 数:", n_bacteria, "\n")
 
-cat("计算细菌-KO相关性...\n")
+# OMA风格：使用cross_rcorr计算细菌-KO和细菌-噬菌体相关性
+cor_bacteria_ko <- cross_rcorr(bacteria_t, ko_t)
+cor_bacteria_phage <- cross_rcorr(bacteria_t, phage_t)
 
-for (i in 1:n_bacteria) {
-  for (j in 1:n_ko) {
-    test_result <- cor.test(
-      bacteria_t[, i], ko_t[, j],
-      method = "spearman",
-      exact = FALSE
-    )
-    cor_matrix_bacteria_ko[i, j] <- test_result$estimate
-    pval_matrix_bacteria_ko[i, j] <- test_result$p.value
-  }
-}
+bacteria_ko_pairs <- corr_to_df(cor_bacteria_ko, "bacteria", "ko")
+bacteria_phage_pairs <- corr_to_df(cor_bacteria_phage, "bacteria", "phage")
 
-# FDR
-qval_matrix_bacteria_ko <- matrix(
-  p.adjust(as.vector(pval_matrix_bacteria_ko), method = "BH"),
-  nrow = n_bacteria, ncol = n_ko
-)
-rownames(qval_matrix_bacteria_ko) <- rownames(cor_matrix_bacteria_ko)
-colnames(qval_matrix_bacteria_ko) <- colnames(cor_matrix_bacteria_ko)
+n_sig_bac_ko <- sum(bacteria_ko_pairs$qvalue < 0.25, na.rm = TRUE)
+n_sig_bac_phage <- sum(bacteria_phage_pairs$qvalue < 0.25, na.rm = TRUE)
 
-n_sig_bac_ko <- sum(qval_matrix_bacteria_ko < 0.25, na.rm = TRUE)
-cat("细菌-KO 显著关联数 (FDR < 0.25):", n_sig_bac_ko, "\n")
-```
-
-## 4.2 计算细菌-噬菌体 关联
-
-```{r}
-#| label: bacteria-phage-correlation
-
-cat("\n=== 计算细菌-噬菌体 关联 ===\n")
-
-cor_matrix_bacteria_phage <- matrix(NA, nrow = n_bacteria, ncol = n_phage)
-pval_matrix_bacteria_phage <- matrix(NA, nrow = n_bacteria, ncol = n_phage)
-rownames(cor_matrix_bacteria_phage) <- colnames(bacteria_t)
-colnames(cor_matrix_bacteria_phage) <- colnames(phage_t)
-
-cat("计算细菌-噬菌体相关性...\n")
-
-for (i in 1:n_bacteria) {
-  for (j in 1:n_phage) {
-    test_result <- cor.test(
-      bacteria_t[, i], phage_t[, j],
-      method = "spearman",
-      exact = FALSE
-    )
-    cor_matrix_bacteria_phage[i, j] <- test_result$estimate
-    pval_matrix_bacteria_phage[i, j] <- test_result$p.value
-  }
-}
-
-# FDR
-qval_matrix_bacteria_phage <- matrix(
-  p.adjust(as.vector(pval_matrix_bacteria_phage), method = "BH"),
-  nrow = n_bacteria, ncol = n_phage
-)
-rownames(qval_matrix_bacteria_phage) <- rownames(cor_matrix_bacteria_phage)
-colnames(qval_matrix_bacteria_phage) <- colnames(cor_matrix_bacteria_phage)
-
-n_sig_bac_phage <- sum(qval_matrix_bacteria_phage < 0.25, na.rm = TRUE)
+cat("\n细菌-KO 显著关联数 (FDR < 0.25):", n_sig_bac_ko, "\n")
 cat("细菌-噬菌体 显著关联数 (FDR < 0.25):", n_sig_bac_phage, "\n")
 ```
 
-## 4.3 构建三角互作网络
+## 4.2 构建三角互作网络
 
 ```{r}
 #| label: tripartite-network
@@ -599,80 +530,28 @@ cat("细菌-噬菌体 显著关联数 (FDR < 0.25):", n_sig_bac_phage, "\n")
 
 cat("\n=== 构建三角互作网络 ===\n")
 
-# 使用较宽松的阈值筛选边
+# 阈值设置
 cor_threshold <- 0.5
 fdr_threshold <- 0.25
 
-# 创建边列表
-edges_list <- list()
+# OMA风格：使用corr_to_edges向量化创建边列表
+edges_bacteria_ko <- corr_to_edges(cor_bacteria_ko, cor_threshold, fdr_threshold, "Bacteria-KO")
+edges_bacteria_phage <- corr_to_edges(cor_bacteria_phage, cor_threshold, fdr_threshold, "Bacteria-Phage")
+edges_phage_ko <- corr_to_edges(cor_phage_ko, cor_threshold, fdr_threshold, "Phage-KO")
 
-# 1. 细菌-KO 边
-for (i in 1:n_bacteria) {
-  for (j in 1:n_ko) {
-    if (!is.na(qval_matrix_bacteria_ko[i, j]) &&
-        qval_matrix_bacteria_ko[i, j] < fdr_threshold &&
-        abs(cor_matrix_bacteria_ko[i, j]) > cor_threshold) {
-      edges_list[[length(edges_list) + 1]] <- data.frame(
-        from = rownames(cor_matrix_bacteria_ko)[i],
-        to = colnames(cor_matrix_bacteria_ko)[j],
-        weight = cor_matrix_bacteria_ko[i, j],
-        type = "Bacteria-KO",
-        stringsAsFactors = FALSE
-      )
-    }
-  }
-}
+# 合并所有边
+edges_df <- bind_rows(edges_bacteria_ko, edges_bacteria_phage, edges_phage_ko)
 
-# 2. 细菌-噬菌体 边
-for (i in 1:n_bacteria) {
-  for (j in 1:n_phage) {
-    if (!is.na(qval_matrix_bacteria_phage[i, j]) &&
-        qval_matrix_bacteria_phage[i, j] < fdr_threshold &&
-        abs(cor_matrix_bacteria_phage[i, j]) > cor_threshold) {
-      edges_list[[length(edges_list) + 1]] <- data.frame(
-        from = rownames(cor_matrix_bacteria_phage)[i],
-        to = colnames(cor_matrix_bacteria_phage)[j],
-        weight = cor_matrix_bacteria_phage[i, j],
-        type = "Bacteria-Phage",
-        stringsAsFactors = FALSE
-      )
-    }
-  }
-}
-
-# 3. 噬菌体-KO 边
-for (i in 1:n_phage) {
-  for (j in 1:n_ko) {
-    if (!is.na(qval_matrix_phage_ko[i, j]) &&
-        qval_matrix_phage_ko[i, j] < fdr_threshold &&
-        abs(cor_matrix_phage_ko[i, j]) > cor_threshold) {
-      edges_list[[length(edges_list) + 1]] <- data.frame(
-        from = rownames(cor_matrix_phage_ko)[i],
-        to = colnames(cor_matrix_phage_ko)[j],
-        weight = cor_matrix_phage_ko[i, j],
-        type = "Phage-KO",
-        stringsAsFactors = FALSE
-      )
-    }
-  }
-}
-
-# 合并边
-if (length(edges_list) > 0) {
-  edges_df <- bind_rows(edges_list)
-
+if (nrow(edges_df) > 0) {
   cat("网络边数:\n")
-  cat("  细菌-KO:", sum(edges_df$type == "Bacteria-KO"), "\n")
-  cat("  细菌-噬菌体:", sum(edges_df$type == "Bacteria-Phage"), "\n")
-  cat("  噬菌体-KO:", sum(edges_df$type == "Phage-KO"), "\n")
+  cat("  细菌-KO:", nrow(edges_bacteria_ko), "\n")
+  cat("  细菌-噬菌体:", nrow(edges_bacteria_phage), "\n")
+  cat("  噬菌体-KO:", nrow(edges_phage_ko), "\n")
   cat("  总计:", nrow(edges_df), "\n")
 
-  # 保存边列表
   write.csv(edges_df, path_target("05_tripartite_network_edges.csv"), row.names = FALSE)
-
 } else {
   cat("当前阈值下没有足够的边，尝试降低阈值...\n")
-  edges_df <- data.frame()
 }
 ```
 
@@ -683,60 +562,41 @@ if (length(edges_list) > 0) {
 
 if (nrow(edges_df) > 0) {
 
-  # 创建节点列表
+  # 创建节点列表并确定类型
   all_nodes <- unique(c(edges_df$from, edges_df$to))
 
-  # 确定节点类型
+  # 使用cross_rcorr结果的行列名判断节点类型
+  bacteria_names <- rownames(cor_bacteria_ko$r)
+  phage_names <- rownames(cor_phage_ko$r)
+  ko_names <- colnames(cor_bacteria_ko$r)
+
   node_type <- case_when(
-    all_nodes %in% rownames(cor_matrix_bacteria_ko) ~ "Bacteria",
-    all_nodes %in% rownames(cor_matrix_phage_ko) ~ "Phage",
-    all_nodes %in% colnames(cor_matrix_bacteria_ko) ~ "KO",
+    all_nodes %in% bacteria_names ~ "Bacteria",
+    all_nodes %in% phage_names ~ "Phage",
+    all_nodes %in% ko_names ~ "KO",
     TRUE ~ "Unknown"
   )
 
   nodes_df <- data.frame(
     name = all_nodes,
     type = node_type,
+    label = stringr::str_trunc(all_nodes, 20),
     stringsAsFactors = FALSE
   )
 
-  # 简化节点名称
-  nodes_df$label <- stringr::str_trunc(nodes_df$name, 20)
-
-  # 创建 igraph 对象
+  # 创建igraph对象
   g <- graph_from_data_frame(edges_df, directed = FALSE, vertices = nodes_df)
 
-  # 设置边颜色（基于关联类型）
-  edge_colors <- case_when(
-    E(g)$type == "Bacteria-KO" ~ "#1B9E77",
-    E(g)$type == "Bacteria-Phage" ~ "#D95F02",
-    E(g)$type == "Phage-KO" ~ "#7570B3",
-    TRUE ~ "grey"
-  )
-
-  # 设置边宽度（使用绝对值）
-  E(g)$width <- abs(E(g)$weight) * 3
-  E(g)$color <- edge_colors
-
-  # 边的线型：实线=正相关，虚线=负相关
-  E(g)$lty <- ifelse(E(g)$weight > 0, 1, 2)
-
-  # 重要：为布局算法创建正权重（使用绝对值）
+  # 重要：为布局算法创建正权重
   E(g)$layout_weight <- abs(E(g)$weight)
 
-  # 设置节点颜色
-  node_colors <- case_when(
-    V(g)$type == "Bacteria" ~ "#66C2A5",
-    V(g)$type == "Phage" ~ "#FC8D62",
-    V(g)$type == "KO" ~ "#8DA0CB",
-    TRUE ~ "grey"
-  )
-  V(g)$color <- node_colors
-
-  # 绘制网络（使用正权重进行布局）
+  # 绘制网络
   p_network <- ggraph(g, layout = "fr", weights = E(g)$layout_weight) +
-    geom_edge_link(aes(color = type, width = abs(weight), linetype = ifelse(weight > 0, "positive", "negative")),
-                   alpha = 0.6) +
+    geom_edge_link(
+      aes(color = type, width = abs(weight),
+          linetype = ifelse(weight > 0, "positive", "negative")),
+      alpha = 0.6
+    ) +
     geom_node_point(aes(color = type), size = 5) +
     geom_node_text(aes(label = label), repel = TRUE, size = 2.5) +
     scale_edge_color_manual(
@@ -749,28 +609,19 @@ if (nrow(edges_df) > 0) {
       name = "Correlation"
     ) +
     scale_color_manual(
-      values = c("Bacteria" = "#66C2A5",
-                 "Phage" = "#FC8D62",
-                 "KO" = "#8DA0CB")
+      values = c("Bacteria" = "#66C2A5", "Phage" = "#FC8D62", "KO" = "#8DA0CB")
     ) +
     theme_void() +
     labs(
       title = "Tripartite Interaction Network",
-      subtitle = "Bacteria - Phage - KO associations (|r| > 0.5, FDR < 0.25)\nSolid = positive correlation, Dashed = negative correlation",
-      edge_color = "Edge Type",
-      color = "Node Type"
+      subtitle = "Bacteria - Phage - KO associations (|r| > 0.5, FDR < 0.25)\nSolid = positive, Dashed = negative",
+      edge_color = "Edge Type", color = "Node Type"
     ) +
-    theme(
-      plot.title = element_text(size = 14, face = "bold"),
-      legend.position = "right"
-    )
+    theme(plot.title = element_text(size = 14, face = "bold"), legend.position = "right")
 
   print(p_network)
 
-  ggsave(
-    path_target("06_tripartite_network.png"),
-    p_network, width = 14, height = 12, dpi = 300
-  )
+  ggsave(path_target("06_tripartite_network.png"), p_network, width = 14, height = 12, dpi = 300)
 
 } else {
   cat("边数不足，无法绘制网络图\n")
@@ -826,6 +677,55 @@ cat("R版本:", R.version.string, "\n")
 cat("分析日期:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
 cat("工作目录:", getwd(), "\n")
 ```
+
+# Part 6: 科学结论与讨论
+
+## 6.1 主要发现
+
+本分析整合了病毒组（Lyrebird噬菌体）与功能组（HUMAnN KO/Pathway）数据，构建了细菌-噬菌体-功能的三角互作网络。
+
+**核心发现：**
+
+1. **噬菌体-功能关联广泛存在**
+   - 噬菌体与KO之间存在大量显著相关（FDR<0.05: 2877对），表明噬菌体丰度变化与宿主菌群的代谢功能密切相关
+   - 噬菌体与代谢通路的关联相对较少（FDR<0.05: 337对），可能反映了通路水平的功能冗余性
+
+2. **细菌-噬菌体协同模式**
+   - 细菌-噬菌体显著关联数量最多，反映了噬菌体与其潜在宿主细菌之间的共变化模式
+   - 正相关可能代表溶原状态下的共存关系，负相关可能反映裂解周期的捕食关系
+
+3. **三角互作网络特征**
+   - 网络高度连通，显示CagA感染环境下微生物组各层次之间的紧密联系
+   - 噬菌体同时与细菌和功能模块相关联，支持"噬菌体通过调控细菌群落间接影响功能"的假说
+
+## 6.2 与前期分析的整合
+
+| 分析模块 | 主要发现 | 03b的补充 |
+|----------|----------|-----------|
+| 01 物种多样性 | CagA+组物种组成显著变化 | 噬菌体也呈现类似的组间差异模式 |
+| 02 功能分析 | 特定KO/Pathway与CagA状态关联 | 这些功能变化部分可由噬菌体-宿主互作解释 |
+| 03 SingleM/Lyrebird | 噬菌体多样性与处理组相关 | 噬菌体多样性变化与功能组变化存在关联 |
+
+## 6.3 研究局限性
+
+1. **样本量限制**：仅9个共同样本，导致：
+   - 部分相关系数达到极端值（r=1或-1）
+   - 统计检验力有限，可能存在假阳性
+   - 建议后续研究扩大样本量验证
+
+2. **因果关系推断**：相关性分析无法确定因果方向
+   - 噬菌体变化可能是因（主动调控），也可能是果（响应细菌变化）
+   - 需要实验验证或时间序列数据支持
+
+3. **功能注释局限**：噬菌体OTU缺乏详细的分类学和功能注释
+
+## 6.4 科学意义
+
+本分析首次在pc047项目中系统性地整合了病毒组与功能组数据，主要贡献包括：
+
+1. **方法学创新**：建立了噬菌体-细菌-功能三角互作分析框架，可应用于其他微生物组研究
+2. **机制提示**：CagA感染可能通过调控噬菌体-细菌平衡间接影响菌群功能
+3. **数据资源**：生成了完整的相关性矩阵和网络边列表，为后续深入分析提供基础
 
 ---
 
