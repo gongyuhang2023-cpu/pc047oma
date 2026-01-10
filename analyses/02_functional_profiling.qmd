@@ -3435,6 +3435,34 @@ cat("
 ```
 
 ```{r}
+#| label: save-rds-for-downstream
+
+# ==============================================================================
+# 保存关键数据供下游分析（如 03b_virome_function_integration）使用
+# ==============================================================================
+
+cat("=== 保存数据供下游分析 ===\n\n")
+
+# 保存 KO TSE 对象（核心比较组）
+saveRDS(
+  tse_ko_corepair,
+  file = here::here("data", params$name, "tse_ko_corepair.rds")
+)
+cat("已保存: tse_ko_corepair.rds\n")
+cat("  - 样本数:", ncol(tse_ko_corepair), "\n")
+cat("  - KO数:", nrow(tse_ko_corepair), "\n")
+
+# 保存 Pathway TSE 对象（核心比较组）
+saveRDS(
+  tse_humann_pathway_ca_corepair,
+  file = here::here("data", params$name, "tse_humann_pathway_corepair.rds")
+)
+cat("\n已保存: tse_humann_pathway_corepair.rds\n")
+cat("  - 样本数:", ncol(tse_humann_pathway_ca_corepair), "\n")
+cat("  - Pathway数:", nrow(tse_humann_pathway_ca_corepair), "\n")
+```
+
+```{r}
 #| label: session-info
 
 cat("\n【分析环境信息】\n")
