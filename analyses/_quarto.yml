@@ -1,0 +1,13 @@
+project:
+  type: default
+  output-dir: _output
+
+execute:
+  freeze: auto      # 源文件没改就不重新执行代码
+  warning: false    # 隐藏警告信息
+
+format:
+  html:
+    embed-resources: true
+    toc: true
+    code-fold: true
