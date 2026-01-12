@@ -1,7 +1,13 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd Claude Code configuration and learning notes with hypothesis validation framework\n\n- Add .claude/ folder with custom skills \\(new-analysis, interpret, data-check, render, oma-ref, summarize\\)\n- Add CLAUDE.md with project context, hypothesis validation framework, and analysis guidelines\n- Add learning notes for all 4 analysis modules \\(01, 02, 03, 03b\\)\n- Update 00_analysis_summary_report.md with hypothesis validation status and streamlined structure\n- Remove redundant \"limitations\" section, consolidate conclusions\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push:*)",
+      "Bash(git commit:*)",
+      "Skill(notebooklm)",
+      "WebFetch(domain:www.humanlayer.dev)",
+      "Bash(python:*)"
     ]
   }
 }
