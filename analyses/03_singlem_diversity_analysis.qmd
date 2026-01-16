@@ -1983,3 +1983,733 @@ These files have been written to the target directory, `r paste0("data/", params
 #| include: false
 projthis::proj_dir_info(path_target(), tz = "CET")
 ```
+
+# Part 4: 扩展组间比较分析
+
+::: {.callout-note}
+## 分析目的
+
+此前的分析仅比较了核心组 **ApcMUT_HpWT vs ApcMUT_HpKO**。本部分将扩展分析范围：
+
+1. **多组可视化**：展示所有实验组的群落结构
+2. **新增两两比较**：探究不同因素组合下的差异
+3. **双因素交互作用**：分析 Apc状态 × Hp感染 的交互效应
+
+这些分析可以回答：**CagA的菌群重塑效应是否依赖于Apc突变背景？**
+:::
+
+## 16. 数据准备：全组分析
+
+```{r}
+#| label: extended-data-prep
+
+# ==============================================================================
+# 1. 准备包含所有组的 TSE 对象
+# ==============================================================================
+cat("=== Part 4: 扩展组间比较分析 ===\n\n")
+
+# 使用已清洗的全部 Caecum 样本
+tse_singlem_all <- tse_singlem_ca_cleaned
+tse_lyrebird_all <- tse_lyrebird_ca_cleaned
+
+# 检查各组样本分布
+cat("SingleM 各组样本分布:\n")
+print(table(tse_singlem_all$treatment_group))
+
+cat("\nLyrebird 各组样本分布:\n")
+print(table(tse_lyrebird_all$treatment_group))
+
+# ==============================================================================
+# 2. 创建分析所需的因子变量
+# ==============================================================================
+# 提取 Apc 状态和 Hp 感染状态（从 treatment_group 解析）
+parse_treatment <- function(tse) {
+  colData(tse)$Apc_status <- ifelse(
+    grepl("ApcMUT", colData(tse)$treatment_group),
+    "ApcMUT", "ApcWT"
+  )
+  colData(tse)$Hp_status <- case_when(
+    grepl("HpWT", colData(tse)$treatment_group) ~ "HpWT",
+    grepl("HpKO", colData(tse)$treatment_group) ~ "HpKO",
+    grepl("Ctrl", colData(tse)$treatment_group) ~ "Ctrl",
+    TRUE ~ "Unknown"
+  )
+  return(tse)
+}
+
+tse_singlem_all <- parse_treatment(tse_singlem_all)
+tse_lyrebird_all <- parse_treatment(tse_lyrebird_all)
+
+# 确认解析结果
+cat("\nApc 状态分布:\n")
+print(table(tse_singlem_all$Apc_status))
+
+cat("\nHp 感染状态分布:\n")
+print(table(tse_singlem_all$Hp_status))
+
+# ==============================================================================
+# 3. 创建排除 Ctrl 组的 2×2 设计子集（用于交互作用分析）
+# ==============================================================================
+tse_singlem_2x2 <- tse_singlem_all[
+  , tse_singlem_all$Hp_status %in% c("HpWT", "HpKO")
+]
+tse_singlem_2x2$Apc_status <- factor(tse_singlem_2x2$Apc_status, levels = c("ApcWT", "ApcMUT"))
+tse_singlem_2x2$Hp_status <- factor(tse_singlem_2x2$Hp_status, levels = c("HpKO", "HpWT"))
+
+tse_lyrebird_2x2 <- tse_lyrebird_all[
+  , tse_lyrebird_all$Hp_status %in% c("HpWT", "HpKO")
+]
+tse_lyrebird_2x2$Apc_status <- factor(tse_lyrebird_2x2$Apc_status, levels = c("ApcWT", "ApcMUT"))
+tse_lyrebird_2x2$Hp_status <- factor(tse_lyrebird_2x2$Hp_status, levels = c("HpKO", "HpWT"))
+
+cat("\n2×2 设计样本分布 (SingleM):\n")
+print(table(tse_singlem_2x2$Apc_status, tse_singlem_2x2$Hp_status))
+```
+
+## 17. 全组 Beta 多样性可视化
+
+```{r}
+#| label: extended-all-groups-pcoa
+#| fig-width: 14
+#| fig-height: 10
+
+# ==============================================================================
+# 1. SingleM 全组 PCoA (Bray-Curtis)
+# ==============================================================================
+tse_singlem_all <- runMDS(
+  tse_singlem_all,
+  FUN = vegan::vegdist,
+  method = "bray",
+  assay.type = "relabundance",
+  name = "PCoA_Bray_All"
+)
+
+eig_all <- attr(reducedDim(tse_singlem_all, "PCoA_Bray_All"), "eig")
+rel_eig_all <- eig_all / sum(eig_all[eig_all > 0])
+
+# 定义颜色方案（区分6组）
+group_colors <- c(
+  "ApcWT_HpKO" = "#4DAF4A",   # 绿色 - WT基线
+  "ApcWT_HpWT" = "#377EB8",   # 蓝色 - WT感染
+  "ApcMUT_HpKO" = "#FF7F00",  # 橙色 - MUT基线
+  "ApcMUT_HpWT" = "#E41A1C",  # 红色 - MUT感染（核心组）
+  "ApcMUT_Ctrl" = "#984EA3",  # 紫色 - MUT对照
+  "ApcWT_Ctrl" = "#A65628"    # 棕色 - WT对照
+)
+
+p_pcoa_all <- plotReducedDim(
+  tse_singlem_all,
+  "PCoA_Bray_All",
+  colour_by = "treatment_group"
+) +
+  scale_color_manual(values = group_colors) +
+  theme_bw() +
+  labs(
+    title = "SingleM: All Groups PCoA (Bray-Curtis)",
+    subtitle = "全部6个实验组的群落结构比较",
+    x = paste0("PCoA 1 (", round(100 * rel_eig_all[1], 1), "%)"),
+    y = paste0("PCoA 2 (", round(100 * rel_eig_all[2], 1), "%)"),
+    color = "Treatment Group"
+  )
+
+# ==============================================================================
+# 2. Lyrebird 全组 PCoA
+# ==============================================================================
+tse_lyrebird_all <- runMDS(
+  tse_lyrebird_all,
+  FUN = vegan::vegdist,
+  method = "bray",
+  assay.type = "relabundance",
+  name = "PCoA_Bray_All"
+)
+
+eig_lyrebird_all <- attr(reducedDim(tse_lyrebird_all, "PCoA_Bray_All"), "eig")
+rel_eig_lyrebird_all <- eig_lyrebird_all / sum(eig_lyrebird_all[eig_lyrebird_all > 0])
+
+p_pcoa_lyrebird_all <- plotReducedDim(
+  tse_lyrebird_all,
+  "PCoA_Bray_All",
+  colour_by = "treatment_group"
+) +
+  scale_color_manual(values = group_colors) +
+  theme_bw() +
+  labs(
+    title = "Lyrebird: All Groups PCoA (Bray-Curtis)",
+    subtitle = "噬菌体群落结构 - 全部实验组",
+    x = paste0("PCoA 1 (", round(100 * rel_eig_lyrebird_all[1], 1), "%)"),
+    y = paste0("PCoA 2 (", round(100 * rel_eig_lyrebird_all[2], 1), "%)"),
+    color = "Treatment Group"
+  )
+
+# ==============================================================================
+# 3. 按因子分面的 PCoA
+# ==============================================================================
+# 提取 PCoA 坐标并显式命名列
+pcoa_coords <- reducedDim(tse_singlem_all, "PCoA_Bray_All")
+pcoa_df_singlem <- data.frame(
+  PCoA1 = pcoa_coords[, 1],
+  PCoA2 = pcoa_coords[, 2],
+  treatment_group = colData(tse_singlem_all)$treatment_group,
+  Apc_status = colData(tse_singlem_all)$Apc_status,
+  Hp_status = colData(tse_singlem_all)$Hp_status
+)
+
+p_pcoa_facet <- ggplot(pcoa_df_singlem, aes(x = PCoA1, y = PCoA2)) +
+  geom_point(aes(color = Hp_status, shape = Apc_status), size = 3) +
+  facet_wrap(~Apc_status) +
+  theme_bw() +
+  labs(
+    title = "SingleM: PCoA by Apc Status",
+    subtitle = "Hp感染效应在不同Apc背景下的表现",
+    x = paste0("PCoA 1 (", round(100 * rel_eig_all[1], 1), "%)"),
+    y = paste0("PCoA 2 (", round(100 * rel_eig_all[2], 1), "%)"),
+    color = "Hp Status",
+    shape = "Apc Status"
+  )
+
+# 组合图
+p_all_groups <- (p_pcoa_all | p_pcoa_lyrebird_all) / p_pcoa_facet +
+  plot_annotation(
+    title = "Part 4: Extended Group Comparisons - All Groups Visualization",
+    theme = theme(plot.title = element_text(size = 16, face = "bold"))
+  )
+
+p_all_groups
+
+ggsave(
+  filename = here::here("data", params$name, "30_extended_all_groups_pcoa.png"),
+  plot = p_all_groups, width = 16, height = 12, dpi = 300
+)
+```
+
+## 18. 新增两两比较
+
+### 18.1 定义比较对
+
+```{r}
+#| label: extended-pairwise-define
+
+# ==============================================================================
+# 定义新增的比较对
+# ==============================================================================
+cat("=== 新增两两比较 ===\n\n")
+
+comparison_pairs <- list(
+  # 已完成的核心比较
+  "Core" = c("ApcMUT_HpWT", "ApcMUT_HpKO"),
+
+  # 新增比较 1: WT背景下的CagA效应
+  "WT_CagA_Effect" = c("ApcWT_HpWT", "ApcWT_HpKO"),
+
+  # 新增比较 2: CagA感染下的Apc突变效应
+  "Infected_Apc_Effect" = c("ApcMUT_HpWT", "ApcWT_HpWT"),
+
+  # 新增比较 3: 未感染时的Apc突变效应
+  "Uninfected_Apc_Effect" = c("ApcMUT_HpKO", "ApcWT_HpKO")
+)
+
+# 为每个比较创建描述
+comparison_desc <- c(
+  "Core" = "核心比较: CagA效应 (Apc突变背景)",
+  "WT_CagA_Effect" = "WT背景下CagA感染效应",
+  "Infected_Apc_Effect" = "CagA感染下Apc突变效应",
+  "Uninfected_Apc_Effect" = "未感染时Apc突变效应"
+)
+
+cat("将进行以下比较:\n")
+for (i in seq_along(comparison_pairs)) {
+  cat(sprintf("  %d. %s: %s vs %s\n",
+              i, names(comparison_pairs)[i],
+              comparison_pairs[[i]][1], comparison_pairs[[i]][2]))
+}
+```
+
+### 18.2 批量进行 PERMANOVA 检验
+
+```{r}
+#| label: extended-pairwise-permanova
+
+# ==============================================================================
+# 批量 PERMANOVA 函数
+# ==============================================================================
+run_pairwise_permanova <- function(tse, pair_name, groups, method = "bray") {
+  # 提取子集
+  tse_sub <- tse[, tse$treatment_group %in% groups]
+  tse_sub$treatment_group <- factor(tse_sub$treatment_group, levels = groups)
+
+  # 计算距离
+  dist_mat <- vegan::vegdist(
+    t(assay(tse_sub, "relabundance")),
+    method = method
+  )
+
+  # PERMANOVA
+  permanova_res <- vegan::adonis2(
+    dist_mat ~ treatment_group,
+    data = data.frame(colData(tse_sub)),
+    permutations = 999
+  )
+
+  # 提取结果
+  data.frame(
+    Comparison = pair_name,
+    Group1 = groups[1],
+    Group2 = groups[2],
+    n1 = sum(tse_sub$treatment_group == groups[1]),
+    n2 = sum(tse_sub$treatment_group == groups[2]),
+    R2 = round(permanova_res$R2[1], 4),
+    F_statistic = round(permanova_res$F[1], 2),
+    P_value = permanova_res$`Pr(>F)`[1]
+  )
+}
+
+# ==============================================================================
+# 运行 SingleM 两两比较
+# ==============================================================================
+cat("\n=== SingleM 两两比较 (Bray-Curtis PERMANOVA) ===\n\n")
+
+singlem_pairwise_results <- bind_rows(lapply(
+  names(comparison_pairs),
+  function(name) {
+    run_pairwise_permanova(tse_singlem_all, name, comparison_pairs[[name]])
+  }
+))
+
+# 添加 FDR 校正
+singlem_pairwise_results$P_adj <- p.adjust(singlem_pairwise_results$P_value, method = "BH")
+singlem_pairwise_results$Significance <- case_when(
+  singlem_pairwise_results$P_adj < 0.001 ~ "***",
+  singlem_pairwise_results$P_adj < 0.01 ~ "**",
+  singlem_pairwise_results$P_adj < 0.05 ~ "*",
+  singlem_pairwise_results$P_adj < 0.1 ~ ".",
+  TRUE ~ "ns"
+)
+
+print(singlem_pairwise_results)
+
+# ==============================================================================
+# 运行 Lyrebird 两两比较
+# ==============================================================================
+cat("\n=== Lyrebird 两两比较 (Bray-Curtis PERMANOVA) ===\n\n")
+
+lyrebird_pairwise_results <- bind_rows(lapply(
+  names(comparison_pairs),
+  function(name) {
+    run_pairwise_permanova(tse_lyrebird_all, name, comparison_pairs[[name]])
+  }
+))
+
+lyrebird_pairwise_results$P_adj <- p.adjust(lyrebird_pairwise_results$P_value, method = "BH")
+lyrebird_pairwise_results$Significance <- case_when(
+  lyrebird_pairwise_results$P_adj < 0.001 ~ "***",
+  lyrebird_pairwise_results$P_adj < 0.01 ~ "**",
+  lyrebird_pairwise_results$P_adj < 0.05 ~ "*",
+  lyrebird_pairwise_results$P_adj < 0.1 ~ ".",
+  TRUE ~ "ns"
+)
+
+print(lyrebird_pairwise_results)
+
+# 保存结果
+write.csv(
+  singlem_pairwise_results,
+  file = here::here("data", params$name, "31_extended_pairwise_singlem.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  lyrebird_pairwise_results,
+  file = here::here("data", params$name, "32_extended_pairwise_lyrebird.csv"),
+  row.names = FALSE
+)
+```
+
+### 18.3 两两比较结果可视化
+
+```{r}
+#| label: extended-pairwise-viz
+#| fig-width: 14
+#| fig-height: 8
+
+# ==============================================================================
+# 两两比较结果条形图
+# ==============================================================================
+
+# 准备绘图数据
+plot_pairwise <- function(results, title) {
+  results$Comparison <- factor(results$Comparison, levels = rev(names(comparison_pairs)))
+
+  ggplot(results, aes(x = Comparison, y = -log10(P_value))) +
+    geom_bar(stat = "identity", aes(fill = P_value < 0.05), width = 0.7) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
+    geom_text(aes(label = Significance), hjust = -0.3, size = 5) +
+    scale_fill_manual(values = c("TRUE" = "#E41A1C", "FALSE" = "grey60"),
+                     labels = c("TRUE" = "P < 0.05", "FALSE" = "P ≥ 0.05")) +
+    coord_flip() +
+    theme_bw() +
+    labs(
+      title = title,
+      x = "",
+      y = "-log10(P-value)",
+      fill = "Significance"
+    ) +
+    theme(
+      axis.text.y = element_text(size = 10),
+      legend.position = "bottom"
+    )
+}
+
+p_singlem_pairwise <- plot_pairwise(singlem_pairwise_results, "SingleM: Pairwise PERMANOVA")
+p_lyrebird_pairwise <- plot_pairwise(lyrebird_pairwise_results, "Lyrebird: Pairwise PERMANOVA")
+
+# ==============================================================================
+# R² 效应量热图
+# ==============================================================================
+combined_results <- bind_rows(
+  singlem_pairwise_results |> mutate(Data = "SingleM"),
+  lyrebird_pairwise_results |> mutate(Data = "Lyrebird")
+)
+
+p_r2_heatmap <- ggplot(combined_results, aes(x = Data, y = Comparison, fill = R2)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = paste0(round(R2 * 100, 1), "%\n", Significance)), size = 3) +
+  scale_fill_gradient(low = "white", high = "#2166AC", name = "R²") +
+  theme_minimal() +
+  labs(
+    title = "Effect Size (R²) Heatmap",
+    subtitle = "PERMANOVA R² represents variance explained by group",
+    x = "", y = ""
+  )
+
+# 组合图
+p_pairwise_combined <- (p_singlem_pairwise | p_lyrebird_pairwise) / p_r2_heatmap +
+  plot_layout(heights = c(1, 0.8)) +
+  plot_annotation(
+    title = "Extended Pairwise Comparisons",
+    theme = theme(plot.title = element_text(size = 16, face = "bold"))
+  )
+
+p_pairwise_combined
+
+ggsave(
+  filename = here::here("data", params$name, "33_extended_pairwise_visualization.png"),
+  plot = p_pairwise_combined, width = 14, height = 10, dpi = 300
+)
+```
+
+## 19. 双因素交互作用分析
+
+::: {.callout-important}
+## 核心问题
+
+**CagA 对菌群的重塑效应是否依赖于 Apc 突变背景？**
+
+如果存在显著的 **Apc × Hp 交互作用**，说明 CagA 感染的效应在 Apc 突变小鼠中与野生型小鼠中不同——这对理解 CagA 的致癌机制至关重要。
+:::
+
+```{r}
+#| label: extended-interaction-analysis
+
+# ==============================================================================
+# 1. 双因素 PERMANOVA（2×2 设计）
+# ==============================================================================
+cat("=== 双因素 PERMANOVA 交互作用分析 ===\n\n")
+
+# SingleM 距离矩阵
+singlem_dist_2x2 <- vegan::vegdist(
+  t(assay(tse_singlem_2x2, "relabundance")),
+  method = "bray"
+)
+
+# 双因素 PERMANOVA
+singlem_two_way <- vegan::adonis2(
+  singlem_dist_2x2 ~ Apc_status * Hp_status,
+  data = data.frame(colData(tse_singlem_2x2)),
+  permutations = 999
+)
+
+cat("=== SingleM 双因素 PERMANOVA ===\n")
+print(singlem_two_way)
+
+# Lyrebird 距离矩阵
+lyrebird_dist_2x2 <- vegan::vegdist(
+  t(assay(tse_lyrebird_2x2, "relabundance")),
+  method = "bray"
+)
+
+# 双因素 PERMANOVA
+lyrebird_two_way <- vegan::adonis2(
+  lyrebird_dist_2x2 ~ Apc_status * Hp_status,
+  data = data.frame(colData(tse_lyrebird_2x2)),
+  permutations = 999
+)
+
+cat("\n=== Lyrebird 双因素 PERMANOVA ===\n")
+print(lyrebird_two_way)
+
+# ==============================================================================
+# 2. 整理交互作用结果
+# ==============================================================================
+extract_twoway_results <- function(res, data_name) {
+  df <- as.data.frame(res)
+  df$Term <- rownames(df)
+  df$Data <- data_name
+  df <- df[df$Term != "Total" & df$Term != "Residual", ]
+  df$Term <- gsub(":", " × ", df$Term)
+  df
+}
+
+twoway_singlem <- extract_twoway_results(singlem_two_way, "SingleM")
+twoway_lyrebird <- extract_twoway_results(lyrebird_two_way, "Lyrebird")
+
+twoway_combined <- bind_rows(twoway_singlem, twoway_lyrebird)
+twoway_combined$Significance <- case_when(
+  twoway_combined$`Pr(>F)` < 0.001 ~ "***",
+  twoway_combined$`Pr(>F)` < 0.01 ~ "**",
+  twoway_combined$`Pr(>F)` < 0.05 ~ "*",
+  twoway_combined$`Pr(>F)` < 0.1 ~ ".",
+  TRUE ~ "ns"
+)
+
+cat("\n=== 双因素 PERMANOVA 结果汇总 ===\n")
+print(twoway_combined |> dplyr::select(Data, Term, R2, F, `Pr(>F)`, Significance))
+
+write.csv(
+  twoway_combined,
+  file = here::here("data", params$name, "34_extended_twoway_permanova.csv"),
+  row.names = FALSE
+)
+```
+
+```{r}
+#| label: extended-interaction-viz
+#| fig-width: 14
+#| fig-height: 10
+
+# ==============================================================================
+# 3. 交互作用可视化
+# ==============================================================================
+
+# 交互效应条形图
+p_interaction_bar <- ggplot(twoway_combined, aes(x = Term, y = -log10(`Pr(>F)`), fill = Data)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
+  geom_text(
+    aes(label = Significance, group = Data),
+    position = position_dodge(width = 0.8),
+    vjust = -0.3, size = 4
+  ) +
+  scale_fill_brewer(palette = "Set1") +
+  theme_bw() +
+  labs(
+    title = "Two-Way PERMANOVA: Main Effects and Interaction",
+    subtitle = "Red dashed line = P = 0.05",
+    x = "", y = "-log10(P-value)"
+  ) +
+  theme(axis.text.x = element_text(size = 11, face = "bold"))
+
+# R² 效应量堆叠条形图
+p_r2_stacked <- ggplot(twoway_combined, aes(x = Data, y = R2, fill = Term)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.6) +
+  scale_fill_brewer(palette = "Set2") +
+  theme_bw() +
+  labs(
+    title = "Variance Explained by Each Factor",
+    subtitle = "Stacked R² from two-way PERMANOVA",
+    x = "", y = "R² (Variance Explained)",
+    fill = "Factor"
+  ) +
+  coord_flip()
+
+# ==============================================================================
+# 4. 交互作用效应图 (Interaction Plot)
+# ==============================================================================
+# 计算每组的平均 Alpha 多样性用于交互图
+
+# 确保 Alpha 已计算
+if (!"shannon_index" %in% colnames(colData(tse_singlem_2x2))) {
+  tse_singlem_2x2 <- addAlpha(
+    tse_singlem_2x2,
+    assay.type = "counts",
+    index = "shannon",
+    name = "shannon_index"
+  )
+}
+
+interaction_df <- data.frame(colData(tse_singlem_2x2)) |>
+  group_by(Apc_status, Hp_status) |>
+  summarise(
+    mean_shannon = mean(shannon_index, na.rm = TRUE),
+    se_shannon = sd(shannon_index, na.rm = TRUE) / sqrt(n()),
+    n = n(),
+    .groups = "drop"
+  )
+
+p_interaction_plot <- ggplot(interaction_df, aes(x = Hp_status, y = mean_shannon,
+                                                  color = Apc_status, group = Apc_status)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 4) +
+  geom_errorbar(aes(ymin = mean_shannon - se_shannon, ymax = mean_shannon + se_shannon),
+                width = 0.1, linewidth = 0.8) +
+  scale_color_manual(values = c("ApcWT" = "#377EB8", "ApcMUT" = "#E41A1C")) +
+  theme_bw() +
+  labs(
+    title = "Interaction Plot: Shannon Diversity",
+    subtitle = "Non-parallel lines suggest interaction",
+    x = "Hp Infection Status",
+    y = "Mean Shannon Index",
+    color = "Apc Status"
+  )
+
+# ==============================================================================
+# 5. 组合图
+# ==============================================================================
+p_interaction_combined <- (p_interaction_bar | p_r2_stacked) / p_interaction_plot +
+  plot_layout(heights = c(1, 0.8)) +
+  plot_annotation(
+    title = "Two-Way Factorial Analysis: Apc × Hp Interaction",
+    theme = theme(plot.title = element_text(size = 16, face = "bold"))
+  )
+
+p_interaction_combined
+
+ggsave(
+  filename = here::here("data", params$name, "35_extended_interaction_analysis.png"),
+  plot = p_interaction_combined, width = 14, height = 10, dpi = 300
+)
+```
+
+## 20. 扩展分析结果汇总
+
+```{r}
+#| label: extended-summary
+#| results: asis
+
+# ==============================================================================
+# 汇总所有扩展分析结果
+# ==============================================================================
+cat("
+## Part 4 扩展分析结果汇总
+
+### 20.1 两两比较结果 (Bray-Curtis PERMANOVA)
+
+#### SingleM 细菌群落
+")
+
+singlem_pairwise_results |>
+  mutate(Description = comparison_desc[Comparison]) |>
+  dplyr::select(Description, Group1, Group2, n1, n2, R2, P_value, P_adj, Significance) |>
+  knitr::kable(digits = 4, caption = "SingleM 两两比较 PERMANOVA 结果")
+
+cat("
+
+#### Lyrebird 噬菌体群落
+")
+
+lyrebird_pairwise_results |>
+  mutate(Description = comparison_desc[Comparison]) |>
+  dplyr::select(Description, Group1, Group2, n1, n2, R2, P_value, P_adj, Significance) |>
+  knitr::kable(digits = 4, caption = "Lyrebird 两两比较 PERMANOVA 结果")
+
+cat("
+
+### 20.2 双因素交互作用分析
+
+")
+
+twoway_combined |>
+  dplyr::select(Data, Term, R2, F, `Pr(>F)`, Significance) |>
+  knitr::kable(digits = 4, caption = "双因素 PERMANOVA 结果 (Apc × Hp)")
+
+# ==============================================================================
+# 生物学解读
+# ==============================================================================
+# 检查交互作用是否显著
+singlem_interaction_p <- twoway_combined |>
+  filter(Data == "SingleM", grepl("×", Term)) |>
+  pull(`Pr(>F)`)
+
+lyrebird_interaction_p <- twoway_combined |>
+  filter(Data == "Lyrebird", grepl("×", Term)) |>
+  pull(`Pr(>F)`)
+
+# 处理空值或 NA
+if (length(singlem_interaction_p) == 0) singlem_interaction_p <- NA
+if (length(lyrebird_interaction_p) == 0) lyrebird_interaction_p <- NA
+
+cat("
+
+### 20.3 生物学解读
+
+#### 交互作用分析结果
+
+- **SingleM (细菌)**: Apc × Hp 交互作用 P = ",
+    ifelse(is.na(singlem_interaction_p), "NA", round(singlem_interaction_p, 4)), "
+- **Lyrebird (噬菌体)**: Apc × Hp 交互作用 P = ",
+    ifelse(is.na(lyrebird_interaction_p), "NA", round(lyrebird_interaction_p, 4)), "
+
+")
+
+# 安全检查交互作用显著性
+singlem_sig <- !is.na(singlem_interaction_p) && singlem_interaction_p < 0.05
+lyrebird_sig <- !is.na(lyrebird_interaction_p) && lyrebird_interaction_p < 0.05
+
+if (singlem_sig || lyrebird_sig) {
+  cat("
+::: {.callout-important}
+## 关键发现：存在显著交互作用
+
+检测到 **Apc状态 × Hp感染状态** 的显著交互效应，表明：
+
+**CagA 对肠道菌群的重塑效应依赖于 Apc 突变背景！**
+
+这意味着：
+- 在 Apc 野生型小鼠中，CagA 感染对菌群的影响可能不同
+- Apc 突变可能增强或改变了 CagA 的菌群重塑能力
+- 这支持了 CagA 通过改变肿瘤微环境来促进肿瘤发生的假说
+:::
+")
+} else {
+  cat("
+::: {.callout-note}
+## 交互作用不显著
+
+未检测到显著的 Apc × Hp 交互效应，表明：
+
+**CagA 对菌群的重塑效应在 Apc 野生型和突变型背景下相似**
+
+主效应分析可能更有意义——请参考各因素的独立效应。
+:::
+")
+}
+
+cat("
+
+#### 各比较对的关键发现
+
+| 比较 | 问题 | SingleM P | Lyrebird P | 解读 |
+|------|------|-----------|------------|------|
+| Core | Apc突变背景下CagA效应 | ", singlem_pairwise_results$P_value[1], " | ", lyrebird_pairwise_results$P_value[1], " | 核心比较 |
+| WT_CagA_Effect | WT背景下CagA效应 | ", singlem_pairwise_results$P_value[2], " | ", lyrebird_pairwise_results$P_value[2], " | CagA独立效应 |
+| Infected_Apc_Effect | 感染下Apc效应 | ", singlem_pairwise_results$P_value[3], " | ", lyrebird_pairwise_results$P_value[3], " | 肿瘤背景效应 |
+| Uninfected_Apc_Effect | 未感染时Apc效应 | ", singlem_pairwise_results$P_value[4], " | ", lyrebird_pairwise_results$P_value[4], " | 基线差异 |
+
+")
+
+# ==============================================================================
+# 保存汇总数据
+# ==============================================================================
+extended_summary <- list(
+  pairwise_singlem = singlem_pairwise_results,
+  pairwise_lyrebird = lyrebird_pairwise_results,
+  twoway_results = twoway_combined,
+  comparison_descriptions = comparison_desc
+)
+
+saveRDS(
+  extended_summary,
+  file = here::here("data", params$name, "36_extended_analysis_summary.rds")
+)
+
+cat("\n\n**分析结果已保存至** `data/", params$name, "/` 目录下。\n")
+```

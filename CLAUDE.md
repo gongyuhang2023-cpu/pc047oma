@@ -35,6 +35,14 @@ Notebook ID: pc047-oma-protocols-reference
 Topics: diversity, ANCOM-BC, ALDEx2, MaAsLin, TreeSummarizedExperiment
 ```
 
+### /notebooklm - Literature Reference (Apc-Microbiome)
+Query literature on Apc mutation and gut microbiome interactions.
+```
+Notebook ID: c14f7f4b-2edd-4bce-a287-b3e531b2f855
+Topics: Apc mutation, gut dysbiosis, CagA, tumor suppressor genes, host-microbiome interaction
+Key papers: PMID 26121046, 39910460, 32728212
+```
+
 ### Paper Search (MCP)
 Search/download papers from arXiv, PubMed, bioRxiv, Semantic Scholar.
 

@@ -7,7 +7,22 @@
       "Bash(git commit:*)",
       "Skill(notebooklm)",
       "WebFetch(domain:www.humanlayer.dev)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "WebFetch(domain:quarto.org)",
+      "Bash(bash:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(Rscript:*)",
+      "mcp__paper-search__search_pubmed",
+      "mcp__paper-search__search_google_scholar",
+      "WebFetch(domain:www.mdpi.com)",
+      "WebFetch(domain:link.springer.com)",
+      "Bash(curl:*)",
+      "Bash(file:*)",
+      "Bash(ls:*)",
+      "mcp__paper-search__download_pubmed",
+      "WebFetch(domain:journals.plos.org)",
+      "WebFetch(domain:bmcgastroenterol.biomedcentral.com)",
+      "WebFetch(domain:www.nature.com)"
     ]
   }
 }
