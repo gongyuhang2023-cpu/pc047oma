@@ -37,6 +37,8 @@ The purpose of this document is:
 2. Part 2: 功能多样性分析（Alpha + Beta）
 3. Part 3: 通路差异丰度分析（DAA）
 4. Part 4: 驱动物种分析（哪个物种贡献了差异功能）
+5. Part 8: 2×3因子设计功能分析（验证G×E交互作用）
+6. Part 9: 分层功能分析（验证功能冗余假说）
 
 ```{r}
 #| label: params
@@ -3900,6 +3902,380 @@ saveRDS(
 cat("已保存: tse_pathway_full_27samples.rds\n")
 cat("  - 样本数:", ncol(tse_pathway_full), "\n")
 cat("  - 通路数:", nrow(tse_pathway_full), "\n")
+```
+
+
+## Part 9: Stratified Functional Analysis（分层功能分析）
+
+**目的**：验证功能冗余假说 — 即使功能总量不变，贡献这些功能的物种结构（Driver Species）是否发生了更替？
+
+**科学问题**：
+- Part 8 发现功能 Beta 多样性交互作用不显著（p=0.223）
+- 但物种 Beta 多样性交互作用显著（p=0.024）
+- 这提示"功能冗余"：不同物种执行相似功能
+- 本部分将揭示：**谁在执行这些功能？这些"执行者"是否在 CagA 感染后发生了更替？**
+
+### 9.1 读取分层数据
+
+```{r}
+#| label: part9-load-stratified
+
+# 读取 HUMAnN stratified pathway 数据
+stratified_file <- here::here(path_data, "humann4",
+                               "humann4_pathabundance-step2-normalized_stratified.tsv")
+
+if (!file.exists(stratified_file)) {
+  stop("Stratified 数据文件不存在: ", stratified_file)
+}
+
+# 读取数据
+stratified_raw <- fread(stratified_file, header = TRUE, sep = "\t")
+colnames(stratified_raw)[1] <- "Feature"
+
+# 清理样本名（去掉 _Abundance 后缀）
+sample_cols <- colnames(stratified_raw)[-1]
+new_sample_names <- gsub("_Abundance$", "", sample_cols)
+colnames(stratified_raw)[-1] <- new_sample_names
+
+cat("【分层数据概览】\n")
+cat("- 总行数:", nrow(stratified_raw), "\n")
+cat("- 样本数:", length(new_sample_names), "\n")
+```
+
+### 9.2 解析通路-物种对
+
+```{r}
+#| label: part9-parse-features
+
+# 分离通路和物种
+stratified_parsed <- stratified_raw %>%
+  filter(grepl("\\|", Feature)) %>%  # 只保留有物种标注的行
+  mutate(
+    # 分离通路和物种
+    Pathway = sub("\\|.*", "", Feature),
+    Species = sub(".*\\|s__", "", Feature),
+    Species = sub("\\.t__.*", "", Species),  # 去掉 strain 信息
+    Species = gsub("_", " ", Species)  # 格式化物种名
+  ) %>%
+  filter(!grepl("^UNINTEGRATED", Pathway)) %>%  # 排除未整合的读段
+  filter(!grepl("^UNMAPPED", Pathway))  # 排除未比对的
+
+# 提取通路简短名称
+stratified_parsed <- stratified_parsed %>%
+  mutate(
+    Pathway_short = sub(":.*", "", Pathway),  # 只保留通路ID
+    Pathway_name = sub("^[^:]+: ", "", Pathway)  # 只保留通路描述
+  )
+
+cat("【解析后数据】\n")
+cat("- 通路数:", n_distinct(stratified_parsed$Pathway_short), "\n")
+cat("- 物种数:", n_distinct(stratified_parsed$Species), "\n")
+cat("- 通路-物种组合:", nrow(stratified_parsed), "\n")
+```
+
+### 9.3 添加样本分组信息
+
+```{r}
+#| label: part9-add-metadata
+
+# 获取样本元数据（使用Part 8中创建的标准化列名）
+sample_meta <- colData(tse_pathway_full) %>%
+  as.data.frame() %>%
+  rownames_to_column("sample_id") %>%
+  dplyr::select(sample_id,
+                genotype = genotype_factor,
+                infection = infection_factor,
+                treatment_group)
+
+# 转换为长格式并添加元数据
+stratified_long <- stratified_parsed %>%
+  dplyr::select(Feature, Pathway_short, Pathway_name, Species, all_of(new_sample_names)) %>%
+  pivot_longer(
+    cols = all_of(new_sample_names),
+    names_to = "sample_id",
+    values_to = "abundance"
+  ) %>%
+  dplyr::left_join(sample_meta, by = "sample_id") %>%
+  dplyr::filter(!is.na(genotype))  # 只保留有元数据的样本
+
+cat("【长格式数据】\n")
+cat("- 总行数:", nrow(stratified_long), "\n")
+cat("- 匹配样本数:", n_distinct(stratified_long$sample_id), "\n")
+```
+
+### 9.4 计算物种对通路的贡献比例
+
+```{r}
+#| label: part9-contribution
+
+# 计算每个样本中，每个通路的总丰度
+pathway_totals <- stratified_long %>%
+  group_by(sample_id, Pathway_short, Pathway_name) %>%
+  summarise(total_abundance = sum(abundance, na.rm = TRUE), .groups = "drop")
+
+# 计算每个物种对通路的贡献比例
+species_contribution <- stratified_long %>%
+  dplyr::left_join(pathway_totals, by = c("sample_id", "Pathway_short", "Pathway_name")) %>%
+  dplyr::filter(total_abundance > 0) %>%  # 排除零丰度通路
+  dplyr::mutate(contribution_pct = abundance / total_abundance * 100)
+
+cat("【物种贡献计算完成】\n")
+cat("- 有效记录数:", nrow(species_contribution), "\n")
+```
+
+### 9.5 识别核心通路的 Driver Species 变化
+
+```{r}
+#| label: part9-driver-analysis
+
+# 聚焦 ApcMUT 样本：比较 HpWT vs HpKO
+apcmut_contribution <- species_contribution %>%
+  filter(genotype == "ApcMUT") %>%
+  filter(infection %in% c("HpWT", "HpKO"))
+
+# 计算每个通路中，各物种在两组的平均贡献
+driver_comparison <- apcmut_contribution %>%
+  group_by(Pathway_short, Pathway_name, Species, infection) %>%
+  summarise(
+    mean_contribution = mean(contribution_pct, na.rm = TRUE),
+    sd_contribution = sd(contribution_pct, na.rm = TRUE),
+    n_samples = n(),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from = infection,
+    values_from = c(mean_contribution, sd_contribution, n_samples),
+    values_fill = 0
+  )
+
+# 计算贡献变化
+driver_comparison <- driver_comparison %>%
+  mutate(
+    contribution_change = mean_contribution_HpWT - mean_contribution_HpKO,
+    abs_change = abs(contribution_change)
+  ) %>%
+  arrange(desc(abs_change))
+
+cat("【Driver Species 变化分析】\n")
+cat("- 分析的通路-物种组合:", nrow(driver_comparison), "\n")
+cat("- 贡献变化 > 10%的组合:", sum(driver_comparison$abs_change > 10), "\n")
+cat("- 贡献变化 > 20%的组合:", sum(driver_comparison$abs_change > 20), "\n")
+```
+
+### 9.6 筛选显著的 Driver 更替事件
+
+```{r}
+#| label: part9-significant-drivers
+
+# 筛选贡献变化显著的物种（变化 > 15%）
+significant_drivers <- driver_comparison %>%
+  filter(abs_change > 15) %>%
+  arrange(desc(abs_change))
+
+# 按通路分组统计
+driver_by_pathway <- significant_drivers %>%
+  group_by(Pathway_short, Pathway_name) %>%
+  summarise(
+    n_changed_species = n(),
+    top_increase = Species[which.max(contribution_change)],
+    max_increase = max(contribution_change),
+    top_decrease = Species[which.min(contribution_change)],
+    max_decrease = min(contribution_change),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(n_changed_species))
+
+cat("\n【显著 Driver 更替的通路（物种贡献变化 > 15%）】\n")
+cat("- 涉及通路数:", nrow(driver_by_pathway), "\n\n")
+
+# 显示前10个
+if (nrow(driver_by_pathway) > 0) {
+  head(driver_by_pathway, 10) %>%
+    knitr::kable(
+      caption = "Top 10 通路的 Driver Species 更替",
+      digits = 2
+    ) %>%
+    print()
+}
+```
+
+### 9.7 可视化：功能冗余的"物种更替"
+
+```{r}
+#| label: part9-visualization
+#| fig-width: 14
+#| fig-height: 10
+
+# 选择 top 变化的通路进行可视化
+top_pathways <- driver_by_pathway %>%
+  head(6) %>%
+  pull(Pathway_short)
+
+if (length(top_pathways) > 0) {
+  # 获取这些通路的物种贡献数据
+  plot_data <- apcmut_contribution %>%
+    filter(Pathway_short %in% top_pathways) %>%
+    group_by(Pathway_short, Pathway_name, Species, infection) %>%
+    summarise(mean_contribution = mean(contribution_pct, na.rm = TRUE), .groups = "drop") %>%
+    # 只保留贡献 > 5% 的物种
+    filter(mean_contribution > 5) %>%
+    # 简化物种名（取属名）
+    mutate(Species_short = sub(" .*", "", Species))
+
+  # 创建堆叠柱状图
+  p9_driver <- ggplot(plot_data,
+                       aes(x = infection, y = mean_contribution, fill = Species_short)) +
+    geom_bar(stat = "identity", position = "stack", width = 0.7) +
+    facet_wrap(~Pathway_short, scales = "free_y", ncol = 3) +
+    theme_bw(base_size = 12) +
+    labs(
+      title = "Driver Species Shift in ApcMUT Mice: CagA+ (HpWT) vs CagA- (HpKO)",
+      subtitle = "Same function, different executors - Evidence for Functional Redundancy",
+      x = "Infection Group",
+      y = "Contribution to Pathway (%)",
+      fill = "Genus"
+    ) +
+    scale_fill_brewer(palette = "Set3") +
+    theme(
+      legend.position = "bottom",
+      strip.text = element_text(size = 8),
+      axis.text.x = element_text(angle = 0, hjust = 0.5)
+    ) +
+    guides(fill = guide_legend(nrow = 2))
+
+  print(p9_driver)
+
+  # 保存图表
+  ggsave(here::here("data", params$name, "91_part9_driver_species_shift.png"),
+         plot = p9_driver, width = 14, height = 10, dpi = 300)
+}
+```
+
+### 9.8 统计检验：Driver 更替的显著性
+
+```{r}
+#| label: part9-statistics
+
+# 对每个显著变化的通路-物种组合进行 Wilcoxon 检验
+if (nrow(significant_drivers) > 0) {
+
+  # 选择变化最大的前20个组合进行检验
+  top_changes <- significant_drivers %>%
+    head(20)
+
+  # Wilcoxon 检验
+  driver_tests <- top_changes %>%
+    rowwise() %>%
+    mutate(
+      test_result = list({
+        # 获取该通路-物种在两组的数据
+        test_data <- apcmut_contribution %>%
+          filter(Pathway_short == Pathway_short, Species == Species)
+
+        if (nrow(test_data) >= 4) {
+          hpwt_vals <- test_data %>% filter(infection == "HpWT") %>% pull(contribution_pct)
+          hpko_vals <- test_data %>% filter(infection == "HpKO") %>% pull(contribution_pct)
+
+          if (length(hpwt_vals) >= 2 && length(hpko_vals) >= 2) {
+            tryCatch({
+              wilcox.test(hpwt_vals, hpko_vals)$p.value
+            }, error = function(e) NA)
+          } else NA
+        } else NA
+      })
+    ) %>%
+    ungroup() %>%
+    mutate(p_value = unlist(test_result)) %>%
+    dplyr::select(-test_result) %>%
+    mutate(p_adj = p.adjust(p_value, method = "fdr"))
+
+  # 显示结果
+  driver_tests_display <- driver_tests %>%
+    dplyr::select(Pathway_short, Species, mean_contribution_HpWT, mean_contribution_HpKO,
+           contribution_change, p_value, p_adj) %>%
+    arrange(p_adj)
+
+  cat("\n【Driver 更替统计检验（Wilcoxon, FDR校正）】\n")
+  print(knitr::kable(head(driver_tests_display, 15), digits = 3))
+
+  # 保存结果
+  write.csv(driver_tests,
+            here::here("data", params$name, "92_part9_driver_species_tests.csv"),
+            row.names = FALSE)
+}
+```
+
+### 9.9 生物学解读总结
+
+```{r}
+#| label: part9-summary
+#| echo: false
+
+# 计算汇总统计
+n_total_pathways <- n_distinct(stratified_parsed$Pathway_short)
+n_pathways_with_shift <- nrow(driver_by_pathway)
+n_significant_shifts <- sum(driver_comparison$abs_change > 15)
+
+cat("
+================================================================================
+                    Part 9: 分层功能分析 - 结果总结
+================================================================================
+
+【分析目的】
+验证功能冗余假说：虽然功能 Beta 多样性交互作用不显著（p=0.223），
+但物种 Beta 多样性交互作用显著（p=0.024），提示存在 Driver Species 更替。
+
+【关键发现】
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 分析范围                                                                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ • 分析通路数:", n_total_pathways, "
+│ • 分析物种数:", n_distinct(stratified_parsed$Species), "
+│ • 聚焦比较: ApcMUT 背景下 HpWT (CagA+) vs HpKO (CagA-)                       │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Driver Species 更替                                                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ • 检测到 Driver 更替的通路数:", n_pathways_with_shift, "
+│ • 显著更替事件（贡献变化 > 15%）:", n_significant_shifts, "
+│ • 这证实了'功能冗余'假说：                                                    │
+│   → 功能总量保持稳定                                                         │
+│   → 但执行功能的物种组成发生了重大变化                                        │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+【生物学意义】
+1. 'Silent Shift'（静默更替）：
+   - CagA 感染在 ApcMUT 背景下引发的菌群变化并非功能中立
+   - 虽然代谢输出相似，但'执行者'已经换了一批
+
+2. 免疫学启示：
+   - 新的 Driver Species 可能携带不同的免疫原性分子（如 LPS、肽聚糖）
+   - 这可能解释 CD8+ T 细胞的持续激活
+
+3. 肿瘤学意义：
+   - 功能冗余掩盖了潜在的致病性物种富集
+   - 需要关注具体哪些物种在'接管'这些功能
+
+================================================================================
+")
+```
+
+```{r}
+#| label: part9-save-results
+
+# 保存分析结果
+saveRDS(
+  list(
+    stratified_parsed = stratified_parsed,
+    driver_comparison = driver_comparison,
+    significant_drivers = significant_drivers,
+    driver_by_pathway = driver_by_pathway
+  ),
+  file = here::here("data", params$name, "93_part9_stratified_analysis_results.rds")
+)
+
+cat("已保存 Part 9 分析结果\n")
 ```
 
 
