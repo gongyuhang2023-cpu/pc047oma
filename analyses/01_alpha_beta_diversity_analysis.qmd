@@ -1923,27 +1923,28 @@ write.csv(
 # 1. 使用清洗后的全样本数据
 tse_full <- tse_standard_species_ca_cleaned
 
-# 2. 添加因子变量：genotype 和 infection
-# 根据sample_name判断genotype（数字开头=ApcMUT，字母开头=ApcWT）
-colData(tse_full)$genotype <- factor(
-
-  ifelse(grepl("^[0-9]", colData(tse_full)$sample_name), "ApcMUT", "ApcWT"),
+# 2. 转换现有的 genotype 和 infection 列为标准化 factor
+# 数据中已有 genotype (Apc_wt, Apc_1638N) 和 infection (control, hp_koCagA, hp_wt)
+# 转换为统一格式的 factor 变量用于分析
+colData(tse_full)$genotype_factor <- factor(
+  ifelse(colData(tse_full)$genotype == "Apc_wt", "ApcWT", "ApcMUT"),
   levels = c("ApcWT", "ApcMUT")
 )
 
-# 根据treatment_group提取infection状态
-colData(tse_full)$infection <- factor(
+# 转换 infection 为标准格式
+colData(tse_full)$infection_factor <- factor(
   dplyr::case_when(
-    grepl("Ctrl", colData(tse_full)$treatment_group) ~ "Ctrl",
-    grepl("HpKO", colData(tse_full)$treatment_group) ~ "HpKO",
-    grepl("HpWT", colData(tse_full)$treatment_group) ~ "HpWT"
+    colData(tse_full)$infection == "control" ~ "Ctrl",
+    colData(tse_full)$infection == "hp_koCagA" ~ "HpKO",
+    colData(tse_full)$infection == "hp_wt" ~ "HpWT"
   ),
   levels = c("Ctrl", "HpKO", "HpWT")
 )
 
 # 3. 验证因子编码
 cat("=== Part 4: 样本分组统计 ===\n")
-print(table(colData(tse_full)$genotype, colData(tse_full)$infection))
+cat("使用标准化 factor 变量:\n")
+print(table(colData(tse_full)$genotype_factor, colData(tse_full)$infection_factor))
 cat("\n总样本数:", ncol(tse_full), "\n")
 
 # 4. 确保relabundance已计算
@@ -1975,13 +1976,13 @@ disp_test_treatment <- permutest(disp_treatment, permutations = 999)
 print(disp_test_treatment)
 
 # 3. 按genotype进行betadisper检验
-disp_genotype <- vegan::betadisper(dist_bc_full, colData(tse_full)$genotype)
+disp_genotype <- vegan::betadisper(dist_bc_full, colData(tse_full)$genotype_factor)
 cat("\n=== betadisper: Genotype ===\n")
 disp_test_genotype <- permutest(disp_genotype, permutations = 999)
 print(disp_test_genotype)
 
 # 4. 按infection进行betadisper检验
-disp_infection <- vegan::betadisper(dist_bc_full, colData(tse_full)$infection)
+disp_infection <- vegan::betadisper(dist_bc_full, colData(tse_full)$infection_factor)
 cat("\n=== betadisper: Infection ===\n")
 disp_test_infection <- permutest(disp_infection, permutations = 999)
 print(disp_test_infection)
@@ -2038,9 +2039,9 @@ if (!"shannon_index" %in% colnames(colData(tse_full))) {
                        name = c("shannon_index", "observed_richness"))
 }
 
-# 2. 准备绘图数据
+# 2. 准备绘图数据（使用标准化 factor 变量）
 alpha_data_full <- as.data.frame(colData(tse_full)) %>%
-  dplyr::select(sample_name, treatment_group, genotype, infection,
+  dplyr::select(treatment_group, genotype = genotype_factor, infection = infection_factor,
                 shannon_index, observed_richness)
 
 # 3. 全6组Shannon多样性箱线图
@@ -2188,10 +2189,10 @@ ggsave(here::here("data", params$name, "43_part4_pcoa_full_6groups.png"),
 metadata_full <- as.data.frame(colData(tse_full))
 
 cat("=== 双因素PERMANOVA: 全6组分析 ===\n")
-cat("公式: distance ~ genotype * infection\n\n")
+cat("公式: distance ~ genotype_factor * infection_factor\n\n")
 
 permanova_full <- vegan::adonis2(
-  dist_bc_full ~ genotype * infection,
+  dist_bc_full ~ genotype_factor * infection_factor,
   data = metadata_full,
   permutations = 999,
   by = "margin"
@@ -2225,11 +2226,11 @@ cat("Genotype×Infection交互: R² =", round(permanova_full$R2[3], 4),
 # 样本：ApcWT_HpKO, ApcWT_HpWT, ApcMUT_HpKO, ApcMUT_HpWT
 # ------------------------------------------------------------------------------
 
-# 1. 筛选感染组样本
-tse_infected <- tse_full[, colData(tse_full)$infection != "Ctrl"]
+# 1. 筛选感染组样本（使用标准化 factor 变量）
+tse_infected <- tse_full[, colData(tse_full)$infection_factor != "Ctrl"]
 cat("=== 2×2子集分析（排除Ctrl组）===\n")
 cat("样本数:", ncol(tse_infected), "\n")
-print(table(colData(tse_infected)$genotype, colData(tse_infected)$infection))
+print(table(colData(tse_infected)$genotype_factor, colData(tse_infected)$infection_factor))
 
 # 2. 重新计算距离矩阵
 dist_bc_infected <- getDissimilarity(tse_infected, method = "bray",
@@ -2247,7 +2248,7 @@ metadata_infected <- as.data.frame(colData(tse_infected))
 
 cat("\n=== 双因素PERMANOVA: 2×2子集 ===\n")
 permanova_infected <- vegan::adonis2(
-  dist_bc_infected ~ genotype * infection,
+  dist_bc_infected ~ genotype_factor * infection_factor,
   data = metadata_infected,
   permutations = 999,
   by = "margin"

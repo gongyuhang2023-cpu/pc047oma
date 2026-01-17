@@ -3462,6 +3462,447 @@ cat("  - 样本数:", ncol(tse_humann_pathway_ca_corepair), "\n")
 cat("  - Pathway数:", nrow(tse_humann_pathway_ca_corepair), "\n")
 ```
 
+
+## Part 8: 扩展分析 - 2×3因子设计 (全27样本)
+
+本部分将功能分析从核心双组比较扩展为完整的2×3因子设计，使用全部27个样本：
+
+- **Genotype**: ApcWT vs ApcMUT (2水平)
+- **Infection**: Ctrl vs HpKO vs HpWT (3水平)
+- **双因素PERMANOVA**: 检验genotype × infection交互作用
+- **betadisper**: 方差齐性检验（PERMANOVA前提假设）
+
+### 8.1 数据准备 - 全样本因子编码
+
+```{r}
+#| label: part8-data-prep
+#| message: false
+
+# ==============================================================================
+# Part 8: 使用全部样本进行2×3因子设计功能分析
+# ==============================================================================
+
+# 1. 使用完整的pathway TSE对象（27样本）
+tse_pathway_full <- tse_humann_pathway_ca
+
+# 2. 转换现有的 genotype 和 infection 列为标准化 factor
+# 数据中已有 genotype (Apc_wt, Apc_1638N) 和 infection (control, hp_koCagA, hp_wt)
+colData(tse_pathway_full)$genotype_factor <- factor(
+  ifelse(colData(tse_pathway_full)$genotype == "Apc_wt", "ApcWT", "ApcMUT"),
+  levels = c("ApcWT", "ApcMUT")
+)
+
+colData(tse_pathway_full)$infection_factor <- factor(
+  dplyr::case_when(
+    colData(tse_pathway_full)$infection == "control" ~ "Ctrl",
+    colData(tse_pathway_full)$infection == "hp_koCagA" ~ "HpKO",
+    colData(tse_pathway_full)$infection == "hp_wt" ~ "HpWT"
+  ),
+  levels = c("Ctrl", "HpKO", "HpWT")
+)
+
+# 3. 验证因子编码
+cat("=== Part 8: 全样本分组统计 ===\n")
+cat("使用标准化 factor 变量:\n\n")
+print(table(colData(tse_pathway_full)$genotype_factor,
+            colData(tse_pathway_full)$infection_factor))
+cat("\n总样本数:", ncol(tse_pathway_full), "\n")
+cat("通路数:", nrow(tse_pathway_full), "\n")
+
+# 4. 确保relabundance已计算
+if (!"relabundance" %in% assayNames(tse_pathway_full)) {
+  tse_pathway_full <- transformAssay(tse_pathway_full,
+                                     assay.type = "abundance",
+                                     method = "relabundance")
+}
+```
+
+### 8.2 betadisper 方差齐性检验
+
+```{r}
+#| label: part8-betadisper
+#| message: false
+
+# ==============================================================================
+# betadisper检验：PERMANOVA的前提假设检验
+# 如果组间方差不齐，PERMANOVA显著性可能是由于离散度差异而非质心差异
+# ==============================================================================
+
+# 1. 计算Bray-Curtis距离矩阵
+dist_bc_pathway_full <- getDissimilarity(tse_pathway_full,
+                                          method = "bray",
+                                          assay.type = "relabundance")
+
+# 2. 按treatment_group进行betadisper检验（6组）
+disp_treatment_pathway <- vegan::betadisper(
+  dist_bc_pathway_full,
+  colData(tse_pathway_full)$treatment_group
+)
+
+cat("=== betadisper: Treatment Group (6组) ===\n")
+disp_test_treatment_pwy <- permutest(disp_treatment_pathway, permutations = 999)
+print(disp_test_treatment_pwy)
+
+# 3. 按genotype进行betadisper检验
+disp_genotype_pathway <- vegan::betadisper(
+  dist_bc_pathway_full,
+  colData(tse_pathway_full)$genotype_factor
+)
+cat("\n=== betadisper: Genotype ===\n")
+disp_test_genotype_pwy <- permutest(disp_genotype_pathway, permutations = 999)
+print(disp_test_genotype_pwy)
+
+# 4. 按infection进行betadisper检验
+disp_infection_pathway <- vegan::betadisper(
+  dist_bc_pathway_full,
+  colData(tse_pathway_full)$infection_factor
+)
+cat("\n=== betadisper: Infection ===\n")
+disp_test_infection_pwy <- permutest(disp_infection_pathway, permutations = 999)
+print(disp_test_infection_pwy)
+```
+
+```{r}
+#| label: part8-betadisper-table
+
+# 保存betadisper结果表
+betadisper_pathway_results <- data.frame(
+  Factor = c("Treatment (6组)", "Genotype", "Infection"),
+  F_value = c(disp_test_treatment_pwy$tab$F[1],
+              disp_test_genotype_pwy$tab$F[1],
+              disp_test_infection_pwy$tab$F[1]),
+  P_value = c(disp_test_treatment_pwy$tab$`Pr(>F)`[1],
+              disp_test_genotype_pwy$tab$`Pr(>F)`[1],
+              disp_test_infection_pwy$tab$`Pr(>F)`[1]),
+  Interpretation = ifelse(
+    c(disp_test_treatment_pwy$tab$`Pr(>F)`[1],
+      disp_test_genotype_pwy$tab$`Pr(>F)`[1],
+      disp_test_infection_pwy$tab$`Pr(>F)`[1]) > 0.05,
+    "方差齐性 ✓",
+    "方差不齐 ⚠"
+  )
+)
+
+write.csv(betadisper_pathway_results,
+          file = here::here("data", params$name, "80_part8_betadisper_pathway_results.csv"),
+          row.names = FALSE)
+
+knitr::kable(betadisper_pathway_results,
+             caption = "功能通路 betadisper 方差齐性检验结果 (全27样本)")
+```
+
+### 8.3 功能Alpha多样性 - 全6组分析
+
+```{r}
+#| label: part8-alpha-full
+#| message: false
+#| fig-width: 12
+#| fig-height: 6
+
+# ==============================================================================
+# 功能Alpha多样性：全6组可视化与统计检验
+# ==============================================================================
+
+# 1. 计算alpha多样性（如果尚未计算）
+if (!"pathway_shannon" %in% colnames(colData(tse_pathway_full))) {
+  tse_pathway_full <- addAlpha(
+    tse_pathway_full,
+    assay.type = "abundance",
+    index = c("shannon", "observed"),
+    name = c("pathway_shannon", "pathway_richness")
+  )
+}
+
+# 2. 准备绘图数据
+alpha_pathway_full <- as.data.frame(colData(tse_pathway_full)) %>%
+  dplyr::select(treatment_group,
+                genotype = genotype_factor,
+                infection = infection_factor,
+                pathway_shannon, pathway_richness)
+
+# 3. 全6组Shannon多样性箱线图
+p8_1 <- ggplot(alpha_pathway_full,
+               aes(x = treatment_group, y = pathway_shannon, fill = infection)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+  geom_jitter(aes(color = genotype), width = 0.2, size = 2) +
+  facet_wrap(~genotype, scales = "free_x") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Functional Shannon Diversity: All 6 Treatment Groups",
+       subtitle = "HUMAnN Pathway-level analysis (n=27)",
+       x = "Treatment Group", y = "Shannon Index") +
+  scale_fill_brewer(palette = "Set2")
+
+# 4. 交互作用可视化（折线图）
+alpha_pathway_summary <- alpha_pathway_full %>%
+  group_by(genotype, infection) %>%
+  summarise(
+    mean_shannon = mean(pathway_shannon, na.rm = TRUE),
+    se_shannon = sd(pathway_shannon, na.rm = TRUE) / sqrt(n()),
+    .groups = "drop"
+  )
+
+p8_2 <- ggplot(alpha_pathway_summary,
+               aes(x = infection, y = mean_shannon, color = genotype, group = genotype)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = mean_shannon - se_shannon,
+                    ymax = mean_shannon + se_shannon), width = 0.1) +
+  theme_bw() +
+  labs(title = "Functional Alpha: Genotype × Infection",
+       x = "Infection Status", y = "Shannon Index (mean ± SE)")
+
+# 组合图
+p8_combined <- p8_1 + p8_2 + plot_layout(widths = c(2, 1))
+p8_combined
+
+# 保存图表
+ggsave(here::here("data", params$name, "81_part8_alpha_pathway_full.png"),
+       plot = p8_combined, width = 14, height = 6, dpi = 300)
+```
+
+```{r}
+#| label: part8-alpha-stats
+#| message: false
+
+# ==============================================================================
+# 功能Alpha多样性统计检验
+# ==============================================================================
+
+# 1. Kruskal-Wallis检验（非参数）
+cat("=== Kruskal-Wallis Test: Pathway Shannon Index ===\n")
+kw_pathway_shannon <- kruskal.test(pathway_shannon ~ treatment_group,
+                                    data = alpha_pathway_full)
+print(kw_pathway_shannon)
+
+# 2. 双因素方差分析（交互作用检验）
+cat("\n=== Two-way ANOVA: Genotype × Infection Interaction ===\n")
+aov_pathway_shannon <- aov(pathway_shannon ~ genotype * infection,
+                            data = alpha_pathway_full)
+print(summary(aov_pathway_shannon))
+
+# 保存统计结果
+alpha_stats_pathway <- data.frame(
+  Test = c("Kruskal-Wallis (6组)", "Genotype主效应", "Infection主效应", "Genotype×Infection交互"),
+  Statistic = c(kw_pathway_shannon$statistic,
+                summary(aov_pathway_shannon)[[1]]$`F value`[1],
+                summary(aov_pathway_shannon)[[1]]$`F value`[2],
+                summary(aov_pathway_shannon)[[1]]$`F value`[3]),
+  P_value = c(kw_pathway_shannon$p.value,
+              summary(aov_pathway_shannon)[[1]]$`Pr(>F)`[1],
+              summary(aov_pathway_shannon)[[1]]$`Pr(>F)`[2],
+              summary(aov_pathway_shannon)[[1]]$`Pr(>F)`[3])
+)
+
+write.csv(alpha_stats_pathway,
+          file = here::here("data", params$name, "82_part8_alpha_pathway_stats.csv"),
+          row.names = FALSE)
+
+knitr::kable(alpha_stats_pathway, digits = 4,
+             caption = "功能Alpha多样性统计检验结果")
+```
+
+### 8.4 功能Beta多样性 - 2×3 PERMANOVA
+
+```{r}
+#| label: part8-permanova
+#| message: false
+
+# ==============================================================================
+# 双因素PERMANOVA：检验genotype和infection对功能组成的效应
+# ==============================================================================
+
+# 准备metadata
+metadata_pathway_full <- as.data.frame(colData(tse_pathway_full))
+
+# 1. 双因素PERMANOVA（交互作用模型，按因子分解）
+cat("=== Two-way PERMANOVA: Genotype × Infection ===\n")
+set.seed(20261)
+permanova_pathway_2way <- vegan::adonis2(
+  dist_bc_pathway_full ~ genotype_factor * infection_factor,
+  data = metadata_pathway_full,
+  permutations = 999,
+  by = "terms"  # 获取每个因子的单独结果
+)
+print(permanova_pathway_2way)
+
+# 2. 边际效应模型（不考虑交互作用）
+cat("\n=== Marginal PERMANOVA: Additive Model ===\n")
+permanova_pathway_marginal <- vegan::adonis2(
+  dist_bc_pathway_full ~ genotype_factor + infection_factor,
+  data = metadata_pathway_full,
+  permutations = 999,
+  by = "margin"
+)
+print(permanova_pathway_marginal)
+```
+
+```{r}
+#| label: part8-permanova-table
+
+# 保存PERMANOVA结果
+# adonis2 with by="terms" 返回 5 行: genotype, infection, interaction, Residual, Total
+permanova_pathway_results <- data.frame(
+  Factor = c("Genotype", "Infection", "Genotype × Infection", "Residual", "Total"),
+  Df = permanova_pathway_2way$Df,
+  SumOfSqs = round(permanova_pathway_2way$SumOfSqs, 4),
+  R2 = round(permanova_pathway_2way$R2, 4),
+  F_value = round(permanova_pathway_2way$F, 4),
+  P_value = round(permanova_pathway_2way$`Pr(>F)`, 4),
+  Interpretation = c(
+    ifelse(permanova_pathway_2way$`Pr(>F)`[1] < 0.05, "显著 ✓", "不显著"),
+    ifelse(permanova_pathway_2way$`Pr(>F)`[2] < 0.05, "显著 ✓", "不显著"),
+    ifelse(permanova_pathway_2way$`Pr(>F)`[3] < 0.05, "交互显著 ⭐", "无交互"),
+    NA,  # Residual
+    NA   # Total
+  )
+)
+
+write.csv(permanova_pathway_results,
+          file = here::here("data", params$name, "83_part8_permanova_pathway_results.csv"),
+          row.names = FALSE)
+
+knitr::kable(permanova_pathway_results, digits = 4,
+             caption = "功能Beta多样性 PERMANOVA 结果 (Bray-Curtis距离)")
+```
+
+### 8.5 功能Beta多样性 PCoA可视化
+
+```{r}
+#| label: part8-pcoa-plot
+#| fig-width: 14
+#| fig-height: 6
+
+# ==============================================================================
+# PCoA可视化：功能组成的降维展示
+# ==============================================================================
+
+# 1. 计算PCoA
+pcoa_pathway_full <- cmdscale(dist_bc_pathway_full, k = 2, eig = TRUE)
+
+# 提取方差解释率
+var_explained_pathway <- round(100 * pcoa_pathway_full$eig / sum(pcoa_pathway_full$eig), 1)
+
+# 准备绘图数据
+pcoa_pathway_df <- data.frame(
+  PC1 = pcoa_pathway_full$points[, 1],
+  PC2 = pcoa_pathway_full$points[, 2],
+  treatment_group = colData(tse_pathway_full)$treatment_group,
+  genotype = colData(tse_pathway_full)$genotype_factor,
+  infection = colData(tse_pathway_full)$infection_factor
+)
+
+# 2. 按6个treatment_group着色
+p8_pcoa_1 <- ggplot(pcoa_pathway_df,
+                    aes(x = PC1, y = PC2, color = treatment_group, shape = genotype)) +
+  geom_point(size = 4, alpha = 0.8) +
+  stat_ellipse(aes(group = treatment_group), level = 0.95, linetype = "dashed") +
+  theme_bw() +
+  labs(
+    title = "Functional Beta Diversity: All 6 Groups",
+    subtitle = paste0("PERMANOVA: Genotype p=",
+                      round(permanova_pathway_2way$`Pr(>F)`[1], 3),
+                      ", Infection p=",
+                      round(permanova_pathway_2way$`Pr(>F)`[2], 3)),
+    x = paste0("PCoA1 (", var_explained_pathway[1], "%)"),
+    y = paste0("PCoA2 (", var_explained_pathway[2], "%)")
+  ) +
+  scale_color_brewer(palette = "Set2")
+
+# 3. 按genotype和infection分面
+p8_pcoa_2 <- ggplot(pcoa_pathway_df,
+                    aes(x = PC1, y = PC2, color = infection, shape = genotype)) +
+  geom_point(size = 4, alpha = 0.8) +
+  facet_wrap(~genotype) +
+  stat_ellipse(aes(group = infection), level = 0.95, linetype = "dashed") +
+  theme_bw() +
+  labs(
+    title = "Functional Beta: By Genotype",
+    x = paste0("PCoA1 (", var_explained_pathway[1], "%)"),
+    y = paste0("PCoA2 (", var_explained_pathway[2], "%)")
+  ) +
+  scale_color_brewer(palette = "Set1")
+
+# 组合图
+p8_pcoa_combined <- p8_pcoa_1 + p8_pcoa_2 + plot_layout(widths = c(1, 1))
+p8_pcoa_combined
+
+# 保存图表
+ggsave(here::here("data", params$name, "84_part8_pcoa_pathway_full.png"),
+       plot = p8_pcoa_combined, width = 14, height = 6, dpi = 300)
+```
+
+### 8.6 Part 8 小结
+
+```{r}
+#| label: part8-summary
+#| echo: false
+
+cat("
+================================================================================
+                    Part 8: 2×3因子设计功能分析 - 结果总结
+================================================================================
+
+【分析概要】
+- 样本量: 全部27个样本
+- 设计: 2×3因子设计 (Genotype × Infection)
+- 分析内容: 功能Alpha/Beta多样性, PERMANOVA交互作用
+
+【betadisper 方差齐性检验】
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 检验PERMANOVA的前提假设                                                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ • Treatment (6组): p =", round(disp_test_treatment_pwy$tab$`Pr(>F)`[1], 4), "
+│ • Genotype: p =", round(disp_test_genotype_pwy$tab$`Pr(>F)`[1], 4), "
+│ • Infection: p =", round(disp_test_infection_pwy$tab$`Pr(>F)`[1], 4), "
+│ • 解读: p > 0.05 表示方差齐性，PERMANOVA结果可靠                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+【功能Alpha多样性】
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Pathway Shannon Index (通路多样性)                                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ • Kruskal-Wallis (6组): p =", round(kw_pathway_shannon$p.value, 4), "
+│ • Genotype主效应: p =", round(summary(aov_pathway_shannon)[[1]]$`Pr(>F)`[1], 4), "
+│ • Infection主效应: p =", round(summary(aov_pathway_shannon)[[1]]$`Pr(>F)`[2], 4), "
+│ • 交互作用: p =", round(summary(aov_pathway_shannon)[[1]]$`Pr(>F)`[3], 4), "
+└─────────────────────────────────────────────────────────────────────────────┘
+
+【功能Beta多样性 - PERMANOVA】
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Bray-Curtis距离, 999次置换                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ • Genotype效应: R² =", round(permanova_pathway_2way$R2[1], 4),
+                  ", p =", round(permanova_pathway_2way$`Pr(>F)`[1], 4), "
+│ • Infection效应: R² =", round(permanova_pathway_2way$R2[2], 4),
+                   ", p =", round(permanova_pathway_2way$`Pr(>F)`[2], 4), "
+│ • Genotype×Infection: R² =", round(permanova_pathway_2way$R2[3], 4),
+                        ", p =", round(permanova_pathway_2way$`Pr(>F)`[3], 4), "
+└─────────────────────────────────────────────────────────────────────────────┘
+
+【生物学解读】
+- 与物种组成（01分析Part 4）的结果对比，可评估功能冗余程度
+- 如果物种Beta显著但功能Beta不显著 → 功能冗余假说成立
+- 交互作用显著性揭示CagA效应是否依赖于Apc遗传背景
+
+================================================================================
+")
+```
+
+```{r}
+#| label: part8-save-data
+
+# 保存全样本TSE对象供后续分析
+saveRDS(
+  tse_pathway_full,
+  file = here::here("data", params$name, "tse_pathway_full_27samples.rds")
+)
+cat("已保存: tse_pathway_full_27samples.rds\n")
+cat("  - 样本数:", ncol(tse_pathway_full), "\n")
+cat("  - 通路数:", nrow(tse_pathway_full), "\n")
+```
+
+
 ```{r}
 #| label: session-info
 
