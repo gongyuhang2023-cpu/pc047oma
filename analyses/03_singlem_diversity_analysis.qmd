@@ -1419,61 +1419,89 @@ write.csv(
 #| label: lyrebird-ancombc
 
 # ==============================================================================
-# ANCOM-BC2 差异丰度分析
+# ANCOM-BC2 差异丰度分析 (带错误处理防止R session崩溃)
 # ==============================================================================
 cat("=== Lyrebird ANCOM-BC2 差异丰度分析 ===\n")
 
 # 准备数据：需要 counts assay
 tse_daa_lyrebird <- tse_lyrebird_corepair
 
-# 运行 ANCOM-BC2
-ancombc_output_lyrebird <- ancombc2(
-  data = tse_daa_lyrebird,
-  assay.type = "counts",
-  fix_formula = "treatment_group",
-  p_adj_method = "fdr",
-  prv_cut = 0.1,
-  lib_cut = 0,
-  group = "treatment_group",
-  struc_zero = TRUE,
-  neg_lb = TRUE,
-  alpha = 0.05,
-  global = FALSE,
-  verbose = TRUE
-)
+# 检查数据质量
+cat("数据检查:\n")
+cat("  样本数:", ncol(tse_daa_lyrebird), "\n")
+cat("  OTU数:", nrow(tse_daa_lyrebird), "\n")
 
-# 提取结果
-ancombc_res_lyrebird <- ancombc_output_lyrebird$res
+# 过滤低丰度OTU，减少计算负担
+row_sums <- rowSums(assay(tse_daa_lyrebird, "counts"))
+keep_rows <- row_sums > 0
+tse_daa_lyrebird <- tse_daa_lyrebird[keep_rows, ]
+cat("  过滤后OTU数:", nrow(tse_daa_lyrebird), "\n")
 
-# 动态查找列名
-lfc_col_lyrebird <- grep("^lfc_", colnames(ancombc_res_lyrebird), value = TRUE)[1]
-q_col_lyrebird <- grep("^q_", colnames(ancombc_res_lyrebird), value = TRUE)[1]
-
-cat("使用的列名:\n")
-cat("  LFC 列:", lfc_col_lyrebird, "\n")
-cat("  Q 值列:", q_col_lyrebird, "\n")
-
-# 添加分类信息
-ancombc_res_lyrebird <- ancombc_res_lyrebird |>
-  dplyr::left_join(
-    rowData(tse_daa_lyrebird) |> as.data.frame() |> rownames_to_column("taxon"),
-    by = "taxon"
+# 使用tryCatch防止崩溃
+ancombc_output_lyrebird <- tryCatch({
+  ancombc2(
+    data = tse_daa_lyrebird,
+    assay.type = "counts",
+    fix_formula = "treatment_group",
+    p_adj_method = "fdr",
+    prv_cut = 0.1,
+    lib_cut = 0,
+    group = "treatment_group",
+    struc_zero = TRUE,
+    neg_lb = TRUE,
+    alpha = 0.05,
+    global = FALSE,
+    verbose = FALSE  # 减少输出
   )
+}, error = function(e) {
+  cat("\n⚠ ANCOM-BC2 运行失败:", conditionMessage(e), "\n")
+  cat("跳过Lyrebird差异丰度分析，继续后续分析...\n")
+  return(NULL)
+})
 
-# 按 q 值排序并取 Top 20
-ancombc_top20_lyrebird <- ancombc_res_lyrebird |>
-  arrange(.data[[q_col_lyrebird]]) |>
-  head(20)
+# 清理内存
+gc()
 
-cat("\n=== Lyrebird ANCOM-BC Top 20 差异噬菌体 OTU ===\n")
-print(ancombc_top20_lyrebird |> dplyr::select(taxon, Family, all_of(c(lfc_col_lyrebird, q_col_lyrebird))))
+# 检查ANCOM-BC是否成功运行
+if (!is.null(ancombc_output_lyrebird)) {
+  # 提取结果
+  ancombc_res_lyrebird <- ancombc_output_lyrebird$res
 
-# 保存完整结果
-write.csv(
-  ancombc_res_lyrebird,
-  file = here::here("data", params$name, "24_ancombc_lyrebird_full.csv"),
-  row.names = FALSE
-)
+  # 动态查找列名
+  lfc_col_lyrebird <- grep("^lfc_", colnames(ancombc_res_lyrebird), value = TRUE)[1]
+  q_col_lyrebird <- grep("^q_", colnames(ancombc_res_lyrebird), value = TRUE)[1]
+
+  cat("使用的列名:\n")
+  cat("  LFC 列:", lfc_col_lyrebird, "\n")
+  cat("  Q 值列:", q_col_lyrebird, "\n")
+
+  # 添加分类信息
+  ancombc_res_lyrebird <- ancombc_res_lyrebird |>
+    dplyr::left_join(
+      rowData(tse_daa_lyrebird) |> as.data.frame() |> rownames_to_column("taxon"),
+      by = "taxon"
+    )
+
+  # 按 q 值排序并取 Top 20
+  ancombc_top20_lyrebird <- ancombc_res_lyrebird |>
+    arrange(.data[[q_col_lyrebird]]) |>
+    head(20)
+
+  cat("\n=== Lyrebird ANCOM-BC Top 20 差异噬菌体 OTU ===\n")
+  print(ancombc_top20_lyrebird |> dplyr::select(taxon, Family, all_of(c(lfc_col_lyrebird, q_col_lyrebird))))
+
+  # 保存完整结果
+  write.csv(
+    ancombc_res_lyrebird,
+    file = here::here("data", params$name, "24_ancombc_lyrebird_full.csv"),
+    row.names = FALSE
+  )
+} else {
+  cat("\n⚠ Lyrebird ANCOM-BC 分析被跳过，无结果可展示\n")
+  ancombc_res_lyrebird <- NULL
+  lfc_col_lyrebird <- NULL
+  q_col_lyrebird <- NULL
+}
 ```
 
 ```{r}
@@ -1482,47 +1510,56 @@ write.csv(
 #| fig-height: 8
 
 # ==============================================================================
-# 火山图可视化
+# 火山图可视化 (仅在ANCOM-BC成功时运行)
 # ==============================================================================
 
-# 准备火山图数据
-volcano_data_lyrebird <- ancombc_res_lyrebird |>
-  mutate(
-    sig = .data[[q_col_lyrebird]] < 0.05,
-    direction = case_when(
-      .data[[q_col_lyrebird]] < 0.05 & .data[[lfc_col_lyrebird]] > 0 ~ "Up in HpWT",
-      .data[[q_col_lyrebird]] < 0.05 & .data[[lfc_col_lyrebird]] < 0 ~ "Up in HpKO",
-      TRUE ~ "NS"
+if (!is.null(ancombc_res_lyrebird)) {
+  # 准备火山图数据
+  volcano_data_lyrebird <- ancombc_res_lyrebird |>
+    mutate(
+      sig = .data[[q_col_lyrebird]] < 0.05,
+      direction = case_when(
+        .data[[q_col_lyrebird]] < 0.05 & .data[[lfc_col_lyrebird]] > 0 ~ "Up in HpWT",
+        .data[[q_col_lyrebird]] < 0.05 & .data[[lfc_col_lyrebird]] < 0 ~ "Up in HpKO",
+        TRUE ~ "NS"
+      )
     )
+
+  # 统计差异 OTU 数量
+  n_sig_up_lyrebird <- sum(volcano_data_lyrebird$direction == "Up in HpWT", na.rm = TRUE)
+  n_sig_down_lyrebird <- sum(volcano_data_lyrebird$direction == "Up in HpKO", na.rm = TRUE)
+  cat("\n差异噬菌体 OTU 统计:\n")
+  cat("  Up in HpWT (CagA+):", n_sig_up_lyrebird, "\n")
+  cat("  Up in HpKO (CagA-):", n_sig_down_lyrebird, "\n")
+
+  p_volcano_lyrebird <- ggplot(volcano_data_lyrebird, aes(x = .data[[lfc_col_lyrebird]], y = -log10(.data[[q_col_lyrebird]]))) +
+    geom_point(aes(color = direction), alpha = 0.6, size = 2) +
+    scale_color_manual(values = c("Up in HpWT" = "#E41A1C", "Up in HpKO" = "#377EB8", "NS" = "grey60")) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "grey40") +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
+    theme_bw() +
+    labs(
+      title = "Lyrebird: Differential Phage Abundance (ANCOM-BC2)",
+      subtitle = paste0("Up in HpWT: ", n_sig_up_lyrebird, " | Up in HpKO: ", n_sig_down_lyrebird),
+      x = "Log Fold Change (HpWT vs HpKO)",
+      y = "-log10(Q-value)",
+      color = "Direction"
+    )
+
+  print(p_volcano_lyrebird)
+
+  ggsave(
+    filename = here::here("data", params$name, "25_volcano_ancombc_lyrebird.png"),
+    plot = p_volcano_lyrebird, width = 10, height = 8, dpi = 300
   )
+} else {
+  cat("\n⚠ 跳过火山图绑定 (ANCOM-BC 未成功运行)\n")
+  n_sig_up_lyrebird <- 0
+  n_sig_down_lyrebird <- 0
+}
 
-# 统计差异 OTU 数量
-n_sig_up_lyrebird <- sum(volcano_data_lyrebird$direction == "Up in HpWT", na.rm = TRUE)
-n_sig_down_lyrebird <- sum(volcano_data_lyrebird$direction == "Up in HpKO", na.rm = TRUE)
-cat("\n差异噬菌体 OTU 统计:\n")
-cat("  Up in HpWT (CagA+):", n_sig_up_lyrebird, "\n")
-cat("  Up in HpKO (CagA-):", n_sig_down_lyrebird, "\n")
-
-p_volcano_lyrebird <- ggplot(volcano_data_lyrebird, aes(x = .data[[lfc_col_lyrebird]], y = -log10(.data[[q_col_lyrebird]]))) +
-  geom_point(aes(color = direction), alpha = 0.6, size = 2) +
-  scale_color_manual(values = c("Up in HpWT" = "#E41A1C", "Up in HpKO" = "#377EB8", "NS" = "grey60")) +
-  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "grey40") +
-  geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
-  theme_bw() +
-  labs(
-    title = "Lyrebird: Differential Phage Abundance (ANCOM-BC2)",
-    subtitle = paste0("Up in HpWT: ", n_sig_up_lyrebird, " | Up in HpKO: ", n_sig_down_lyrebird),
-    x = "Log Fold Change (HpWT vs HpKO)",
-    y = "-log10(Q-value)",
-    color = "Direction"
-  )
-
-p_volcano_lyrebird
-
-ggsave(
-  filename = here::here("data", params$name, "25_volcano_ancombc_lyrebird.png"),
-  plot = p_volcano_lyrebird, width = 10, height = 8, dpi = 300
-)
+# 清理内存
+gc()
 ```
 
 # Part 3: 结果汇总
