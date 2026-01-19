@@ -4279,6 +4279,397 @@ cat("已保存 Part 9 分析结果\n")
 ```
 
 
+## Part 10: 扩展分层成对比较 - 功能Beta多样性
+
+本部分对功能通路（Pathway）进行与物种分析（01分析Part 5）相同的9个成对比较，以验证：
+1. **功能冗余假说** - 物种层面显著的比较，功能层面是否也显著？
+2. **Apc效应在功能层面的表现** - 感染是否也"抹平"功能层面的Apc差异？
+3. **CagA功能效应的遗传背景依赖性** - G×E交互在功能层面是否存在？
+
+### 10.1 定义9个成对比较（与01分析Part 5一致）
+
+```{r}
+#| label: part10-define-comparisons
+#| message: false
+
+# ==============================================================================
+# Part 10: 功能层面的系统性分层成对比较
+# 与物种分析(01 Part 5)完全对应，用于验证功能冗余
+# ==============================================================================
+
+# 使用Part 8中已准备好的数据: tse_pathway_full
+
+# 定义全部9个成对比较（与01分析Part 5完全一致）
+all_comparisons_func <- list(
+  # === 类别A: Apc效应在不同感染状态下 ===
+  list(
+    pair = c("ApcMUT_Ctrl", "ApcWT_Ctrl"),
+    category = "Apc效应",
+    question = "Apc基线效应 (Ctrl组)",
+    hypothesis = "Apc突变本身改变功能组成"
+  ),
+  list(
+    pair = c("ApcMUT_HpKO", "ApcWT_HpKO"),
+    category = "Apc效应",
+    question = "Apc效应 (HpKO感染后)",
+    hypothesis = "感染后Apc效应是否消失?"
+  ),
+  list(
+    pair = c("ApcMUT_HpWT", "ApcWT_HpWT"),
+    category = "Apc效应",
+    question = "Apc效应 (HpWT感染后)",
+    hypothesis = "CagA+感染后Apc效应是否消失?"
+  ),
+
+  # === 类别B: 感染效应在ApcMUT背景下 ===
+  list(
+    pair = c("ApcMUT_Ctrl", "ApcMUT_HpKO"),
+    category = "感染效应@ApcMUT",
+    question = "感染效应 (ApcMUT, 无CagA)",
+    hypothesis = "HpKO感染本身的功能效应"
+  ),
+  list(
+    pair = c("ApcMUT_Ctrl", "ApcMUT_HpWT"),
+    category = "感染效应@ApcMUT",
+    question = "感染+CagA效应 (ApcMUT)",
+    hypothesis = "HpWT感染的联合功能效应"
+  ),
+  list(
+    pair = c("ApcMUT_HpKO", "ApcMUT_HpWT"),
+    category = "CagA效应",
+    question = "CagA效应 (ApcMUT背景)",
+    hypothesis = "核心问题: CagA特异功能效应"
+  ),
+
+  # === 类别C: 感染效应在ApcWT背景下 ===
+  list(
+    pair = c("ApcWT_Ctrl", "ApcWT_HpKO"),
+    category = "感染效应@ApcWT",
+    question = "感染效应 (ApcWT, 无CagA)",
+    hypothesis = "野生型中HpKO感染功能效应"
+  ),
+  list(
+    pair = c("ApcWT_Ctrl", "ApcWT_HpWT"),
+    category = "感染效应@ApcWT",
+    question = "感染+CagA效应 (ApcWT)",
+    hypothesis = "野生型中HpWT感染功能效应"
+  ),
+  list(
+    pair = c("ApcWT_HpKO", "ApcWT_HpWT"),
+    category = "CagA效应",
+    question = "CagA效应 (ApcWT背景)",
+    hypothesis = "野生型中CagA功能效应"
+  )
+)
+
+cat("=== Part 10: 功能层面的9个成对比较 ===\n")
+cat("类别A (Apc效应): 3个比较\n")
+cat("类别B (感染效应@ApcMUT): 3个比较\n")
+cat("类别C (感染效应@ApcWT): 3个比较\n\n")
+```
+
+### 10.2 执行全部成对比较
+
+```{r}
+#| label: part10-run-comparisons
+#| message: false
+
+# ==============================================================================
+# 执行全部9个成对PERMANOVA（功能通路层面）
+# ==============================================================================
+
+run_pairwise_permanova_func <- function(tse, pair, n_perm = 999) {
+  # 筛选样本
+  tse_pair <- tse[, colData(tse)$treatment_group %in% pair]
+  n_samples <- ncol(tse_pair)
+
+  # 样本数检查
+  if (n_samples < 4) {
+    return(list(
+      n = n_samples,
+      R2 = NA, F_value = NA, p_value = NA,
+      betadisper_p = NA
+    ))
+  }
+
+  # 计算距离矩阵
+  dist_pair <- getDissimilarity(tse_pair, method = "bray", assay.type = "relabundance")
+  meta_pair <- as.data.frame(colData(tse_pair))
+
+  # PERMANOVA
+  permanova_result <- vegan::adonis2(
+    dist_pair ~ treatment_group,
+    data = meta_pair,
+    permutations = n_perm
+  )
+
+  # betadisper检验
+  disp <- vegan::betadisper(dist_pair, meta_pair$treatment_group)
+  disp_test <- permutest(disp, permutations = n_perm)
+
+  list(
+    n = n_samples,
+    R2 = permanova_result$R2[1],
+    F_value = permanova_result$F[1],
+    p_value = permanova_result$`Pr(>F)`[1],
+    betadisper_p = disp_test$tab$`Pr(>F)`[1]
+  )
+}
+
+# 执行所有比较
+cat("正在执行9个功能层面成对比较...\n")
+comparison_results_func <- lapply(seq_along(all_comparisons_func), function(i) {
+  comp <- all_comparisons_func[[i]]
+  cat(sprintf("  [%d/9] %s vs %s\n", i, comp$pair[1], comp$pair[2]))
+
+  result <- run_pairwise_permanova_func(tse_pathway_full, comp$pair)
+
+  data.frame(
+    comparison_id = i,
+    group1 = comp$pair[1],
+    group2 = comp$pair[2],
+    category = comp$category,
+    question = comp$question,
+    hypothesis = comp$hypothesis,
+    n_total = result$n,
+    R2 = round(result$R2, 4),
+    F_value = round(result$F_value, 2),
+    p_value = result$p_value,
+    betadisper_p = round(result$betadisper_p, 3)
+  )
+})
+
+part10_results <- do.call(rbind, comparison_results_func)
+
+# FDR校正
+part10_results$p_adj <- p.adjust(part10_results$p_value, method = "BH")
+
+# 显著性标记
+part10_results$sig <- ifelse(part10_results$p_adj < 0.01, "***",
+                             ifelse(part10_results$p_adj < 0.05, "**",
+                                    ifelse(part10_results$p_adj < 0.1, "*", "")))
+
+# 方差齐性标记
+part10_results$variance_ok <- ifelse(part10_results$betadisper_p > 0.05, "✓", "⚠")
+
+cat("\n=== Part 10: 全部9个功能层面成对比较结果 ===\n")
+print(part10_results[, c("question", "n_total", "R2", "p_value", "p_adj", "sig", "variance_ok")])
+
+# 保存结果
+write.csv(part10_results,
+          file = here::here("data", params$name, "100_part10_all_pairwise_comparisons.csv"),
+          row.names = FALSE)
+```
+
+### 10.3 功能冗余验证：与物种层面对比
+
+```{r}
+#| label: part10-redundancy-comparison
+#| message: false
+#| fig-width: 12
+#| fig-height: 8
+
+# ==============================================================================
+# 读取01分析Part 5的物种层面结果，与功能层面对比
+# ==============================================================================
+
+# 尝试读取物种分析结果
+species_results_path <- here::here("data", "01_alpha_beta_diversity_analysis",
+                                    "50_part5_all_pairwise_comparisons.csv")
+
+if (file.exists(species_results_path)) {
+  species_results <- read.csv(species_results_path)
+
+  # 合并物种和功能结果
+  comparison_df <- data.frame(
+    question = part10_results$question,
+    species_R2 = species_results$R2,
+    species_p_adj = species_results$p_adj,
+    species_sig = species_results$sig,
+    function_R2 = part10_results$R2,
+    function_p_adj = part10_results$p_adj,
+    function_sig = part10_results$sig
+  )
+
+  # 计算功能冗余指标
+  comparison_df$redundancy_ratio <- comparison_df$species_R2 / pmax(comparison_df$function_R2, 0.001)
+  comparison_df$redundancy_pattern <- case_when(
+    comparison_df$species_p_adj < 0.05 & comparison_df$function_p_adj > 0.1 ~ "功能冗余",
+    comparison_df$species_p_adj < 0.05 & comparison_df$function_p_adj < 0.05 ~ "物种-功能一致",
+    comparison_df$species_p_adj > 0.1 & comparison_df$function_p_adj > 0.1 ~ "均无差异",
+    TRUE ~ "其他模式"
+  )
+
+  cat("=== 物种 vs 功能层面对比 ===\n\n")
+  print(comparison_df[, c("question", "species_R2", "species_sig",
+                          "function_R2", "function_sig", "redundancy_pattern")])
+
+  # 保存对比结果
+  write.csv(comparison_df,
+            file = here::here("data", params$name, "101_part10_species_function_comparison.csv"),
+            row.names = FALSE)
+
+  # 可视化
+  plot_data <- comparison_df %>%
+    tidyr::pivot_longer(
+      cols = c(species_R2, function_R2),
+      names_to = "level",
+      values_to = "R2"
+    ) %>%
+    mutate(level = ifelse(level == "species_R2", "物种层面", "功能层面"))
+
+  p10_3_1 <- ggplot(plot_data, aes(x = question, y = R2 * 100, fill = level)) +
+    geom_bar(stat = "identity", position = position_dodge(width = 0.8),
+             width = 0.7, alpha = 0.8) +
+    scale_fill_manual(values = c("物种层面" = "#E64B35", "功能层面" = "#4DBBD5"),
+                      name = "分析层面") +
+    theme_bw(base_size = 11) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(
+      title = "物种 vs 功能层面效应量对比",
+      subtitle = "功能冗余: 物种层面显著但功能层面不显著",
+      x = "", y = "效应量 R² (%)"
+    )
+
+  print(p10_3_1)
+
+  ggsave(here::here("data", params$name, "102_part10_species_function_comparison.png"),
+         plot = p10_3_1, width = 12, height = 6, dpi = 300)
+
+  # 功能冗余汇总
+  cat("\n=== 功能冗余模式统计 ===\n")
+  print(table(comparison_df$redundancy_pattern))
+
+} else {
+  cat("注意: 未找到物种分析结果文件，请先运行01分析Part 5\n")
+  cat("路径:", species_results_path, "\n")
+}
+```
+
+### 10.4 CagA功能效应的遗传背景依赖性
+
+```{r}
+#| label: part10-caga-effect
+#| message: false
+#| fig-width: 10
+#| fig-height: 5
+
+# ==============================================================================
+# 比较CagA功能效应在ApcMUT vs ApcWT背景下的差异
+# ==============================================================================
+
+caga_effect_func <- part10_results %>%
+  filter(category == "CagA效应") %>%
+  mutate(
+    genetic_background = c("ApcMUT (Apc突变)", "ApcWT (野生型)"),
+    genetic_background = factor(genetic_background,
+                                levels = c("ApcMUT (Apc突变)", "ApcWT (野生型)"))
+  )
+
+cat("=== CagA功能效应的遗传背景依赖性 ===\n\n")
+print(caga_effect_func[, c("genetic_background", "R2", "p_value", "p_adj", "sig")])
+
+# 可视化
+p10_4_1 <- ggplot(caga_effect_func, aes(x = genetic_background, y = R2 * 100,
+                                         fill = genetic_background)) +
+  geom_bar(stat = "identity", alpha = 0.8, width = 0.6) +
+  geom_text(aes(label = paste0(round(R2*100, 1), "%\n", sig)),
+            vjust = -0.3, size = 4) +
+  scale_fill_manual(values = c("ApcMUT (Apc突变)" = "#E64B35",
+                               "ApcWT (野生型)" = "#4DBBD5")) +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "none") +
+  labs(
+    title = "CagA功能效应的遗传背景依赖性",
+    subtitle = "比较: HpWT vs HpKO (功能通路层面)",
+    x = "遗传背景",
+    y = "效应量 R² (%)"
+  ) +
+  ylim(0, max(caga_effect_func$R2 * 100, na.rm = TRUE) * 1.4)
+
+print(p10_4_1)
+
+ggsave(here::here("data", params$name, "103_part10_caga_function_effect.png"),
+       plot = p10_4_1, width = 8, height = 5, dpi = 300)
+
+# 结论
+cat("\n=== 功能层面G×E交互评估 ===\n")
+if (caga_effect_func$p_adj[1] < 0.05 && caga_effect_func$p_adj[2] > 0.1) {
+  cat("✓ 功能层面也存在G×E交互: CagA功能效应仅在ApcMUT背景下显著\n")
+} else if (all(caga_effect_func$p_adj > 0.1)) {
+  cat("△ 功能层面CagA效应均不显著 - 支持功能冗余假说\n")
+} else {
+  cat("? 功能层面模式复杂，需进一步分析\n")
+}
+```
+
+### 10.5 Part 10 综合结论
+
+```{r}
+#| label: part10-conclusions
+#| echo: false
+#| results: asis
+
+# ==============================================================================
+# Part 10 结论汇总
+# ==============================================================================
+
+cat("\n### Part 10 关键发现\n\n")
+
+# 统计显著比较数
+significant_func <- sum(part10_results$p_adj < 0.05)
+
+cat("**1. 功能层面成对比较汇总**\n\n")
+cat(sprintf("- 9个比较中有 **%d个** 在FDR校正后显著 (P_adj < 0.05)\n", significant_func))
+
+# 功能冗余评估
+if (exists("comparison_df")) {
+  n_redundancy <- sum(comparison_df$redundancy_pattern == "功能冗余")
+  cat(sprintf("- **%d个比较** 呈现功能冗余模式（物种显著但功能不显著）\n\n", n_redundancy))
+
+  cat("**2. 功能冗余详细模式**\n\n")
+  cat("| 模式 | 数量 | 比例 |\n")
+  cat("|------|------|------|\n")
+  pattern_table <- table(comparison_df$redundancy_pattern)
+  for (pat in names(pattern_table)) {
+    cat(sprintf("| %s | %d | %.1f%% |\n", pat, pattern_table[pat],
+                100 * pattern_table[pat] / sum(pattern_table)))
+  }
+}
+
+cat("\n**3. 核心结论**\n\n")
+cat("- 功能层面的比较结果可与物种层面（01分析Part 5）直接对照\n")
+cat("- 物种显著但功能不显著的比较支持**功能冗余假说**\n")
+cat("- 这意味着不同物种执行相似功能，掩盖了物种水平的生态学变化\n")
+```
+
+```{r}
+#| label: part10-save-results
+#| echo: false
+
+# 保存Part 10汇总结果
+part10_summary <- list(
+  all_comparisons = part10_results,
+  caga_effect = caga_effect_func,
+  timestamp = Sys.time()
+)
+
+if (exists("comparison_df")) {
+  part10_summary$species_function_comparison <- comparison_df
+}
+
+saveRDS(part10_summary,
+        file = here::here("data", params$name, "104_part10_summary_results.rds"))
+
+cat("\n✅ Part 10 结果已保存:\n")
+cat("  - 100_part10_all_pairwise_comparisons.csv\n")
+cat("  - 101_part10_species_function_comparison.csv\n")
+cat("  - 102_part10_species_function_comparison.png\n")
+cat("  - 103_part10_caga_function_effect.png\n")
+cat("  - 104_part10_summary_results.rds\n")
+```
+
+
 ```{r}
 #| label: session-info
 
