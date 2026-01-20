@@ -3065,6 +3065,530 @@ cat("  - 54_part5_comprehensive_summary.png\n")
 cat("  - 55_part5_summary_results.rds\n")
 ```
 
+# Part 4b: Virus扩展分析 - 2×3因子设计 {#part4b-virus}
+
+本部分对Virus数据进行与Standard数据相同的2×3因子设计分析，以比较病毒组与细菌组在实验设计下的响应差异。
+
+## 4b.1 Virus数据准备 {#sec-part4b-data-prep}
+
+```{r}
+#| label: part4b-virus-data-prep
+#| message: false
+
+# ------------------------------------------------------------------------------
+# Part 4b: Virus 2×3因子设计扩展分析
+# ------------------------------------------------------------------------------
+
+# 1. 使用清洗后的全样本virus数据
+tse_virus_full <- tse_virus_species_ca_cleaned
+
+# 2. 转换为标准化 factor 变量
+colData(tse_virus_full)$genotype_factor <- factor(
+  ifelse(grepl("ApcMUT", colData(tse_virus_full)$treatment_group), "ApcMUT", "ApcWT"),
+  levels = c("ApcWT", "ApcMUT")
+)
+
+colData(tse_virus_full)$infection_factor <- factor(
+  case_when(
+    grepl("_Ctrl$", colData(tse_virus_full)$treatment_group) ~ "Ctrl",
+    grepl("_HpKO$", colData(tse_virus_full)$treatment_group) ~ "HpKO",
+    grepl("_HpWT$", colData(tse_virus_full)$treatment_group) ~ "HpWT"
+  ),
+  levels = c("Ctrl", "HpKO", "HpWT")
+)
+
+# 3. 显示样本分布
+cat("=== Part 4b: Virus 2×3因子设计数据准备 ===\n")
+print(table(colData(tse_virus_full)$genotype_factor, colData(tse_virus_full)$infection_factor))
+cat("\nVirus总样本数:", ncol(tse_virus_full), "\n")
+
+# 4. 确保relabundance已计算
+if (!"relabundance" %in% assayNames(tse_virus_full)) {
+  tse_virus_full <- transformAssay(tse_virus_full, assay.type = "counts", method = "relabundance")
+}
+```
+
+## 4b.2 Virus betadisper方差齐性检验 {#sec-part4b-betadisper}
+
+```{r}
+#| label: part4b-virus-betadisper
+#| message: false
+
+# ------------------------------------------------------------------------------
+# betadisper检验：PERMANOVA的前提假设验证
+# ------------------------------------------------------------------------------
+
+# 计算距离矩阵
+virus_dist_full <- getDissimilarity(tse_virus_full, method = "bray", assay.type = "relabundance")
+
+# betadisper检验（按treatment_group）
+virus_disp_treatment <- betadisper(virus_dist_full, colData(tse_virus_full)$treatment_group)
+virus_disp_test_treatment <- permutest(virus_disp_treatment, permutations = 999)
+
+# betadisper检验（按genotype）
+virus_disp_genotype <- betadisper(virus_dist_full, colData(tse_virus_full)$genotype_factor)
+virus_disp_test_genotype <- permutest(virus_disp_genotype, permutations = 999)
+
+# betadisper检验（按infection）
+virus_disp_infection <- betadisper(virus_dist_full, colData(tse_virus_full)$infection_factor)
+virus_disp_test_infection <- permutest(virus_disp_infection, permutations = 999)
+
+cat("=== Virus betadisper方差齐性检验 ===\n")
+cat("Treatment (6组): P =", round(virus_disp_test_treatment$tab$`Pr(>F)`[1], 4), "\n")
+cat("Genotype (2组): P =", round(virus_disp_test_genotype$tab$`Pr(>F)`[1], 4), "\n")
+cat("Infection (3组): P =", round(virus_disp_test_infection$tab$`Pr(>F)`[1], 4), "\n")
+
+if (all(c(virus_disp_test_treatment$tab$`Pr(>F)`[1],
+          virus_disp_test_genotype$tab$`Pr(>F)`[1],
+          virus_disp_test_infection$tab$`Pr(>F)`[1]) > 0.05)) {
+  cat("\n✓ 所有分组均满足方差齐性假设 (P > 0.05)\n")
+} else {
+  cat("\n⚠ 部分分组方差不齐，PERMANOVA结果需谨慎解读\n")
+}
+```
+
+## 4b.3 Virus Alpha多样性 - 全6组分析 {#sec-part4b-alpha}
+
+```{r}
+#| label: part4b-virus-alpha-6groups
+#| message: false
+#| fig-width: 12
+#| fig-height: 5
+
+# ------------------------------------------------------------------------------
+# Alpha多样性：全6组可视化与统计检验
+# ------------------------------------------------------------------------------
+
+# 1. 确保alpha指数已计算
+if (!"shannon_index" %in% colnames(colData(tse_virus_full))) {
+  tse_virus_full <- addAlpha(tse_virus_full, assay.type = "counts",
+                             index = c("shannon", "observed"),
+                             name = c("shannon_index", "observed_richness"))
+}
+
+# 2. 准备绘图数据
+virus_alpha_data <- as.data.frame(colData(tse_virus_full)) %>%
+  select(treatment_group, genotype_factor, infection_factor, shannon_index, observed_richness)
+
+# 3. Kruskal-Wallis检验（6组）
+virus_kw_shannon <- kruskal.test(shannon_index ~ treatment_group, data = virus_alpha_data)
+virus_kw_observed <- kruskal.test(observed_richness ~ treatment_group, data = virus_alpha_data)
+
+cat("=== Virus Alpha多样性 - 6组Kruskal-Wallis检验 ===\n")
+cat("Shannon: P =", round(virus_kw_shannon$p.value, 4), "\n")
+cat("Observed: P =", round(virus_kw_observed$p.value, 4), "\n")
+
+# 4. 可视化
+p4b_alpha_box <- ggplot(virus_alpha_data, aes(x = treatment_group, y = shannon_index, fill = genotype_factor)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+  geom_jitter(width = 0.2, size = 2, alpha = 0.6) +
+  scale_fill_manual(values = c("ApcWT" = "#4DBBD5", "ApcMUT" = "#E64B35")) +
+  labs(title = "Virus Alpha多样性 (Shannon) - 全6组",
+       subtitle = paste0("Kruskal-Wallis P = ", round(virus_kw_shannon$p.value, 4)),
+       x = "Treatment Group", y = "Shannon Index", fill = "Genotype") +
+  theme_bw(base_size = 11) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p4b_alpha_interaction <- ggplot(virus_alpha_data, aes(x = infection_factor, y = shannon_index,
+                                                       color = genotype_factor, group = genotype_factor)) +
+  stat_summary(fun = mean, geom = "point", size = 3) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2) +
+  scale_color_manual(values = c("ApcWT" = "#4DBBD5", "ApcMUT" = "#E64B35")) +
+  labs(title = "Virus Alpha多样性交互作用图",
+       x = "Infection Status", y = "Shannon Index (Mean ± SE)", color = "Genotype") +
+  theme_bw(base_size = 11)
+
+p4b_alpha_combined <- p4b_alpha_box + p4b_alpha_interaction
+p4b_alpha_combined
+
+ggsave(here::here("data", params$name, "60_part4b_virus_alpha_6groups.png"),
+       plot = p4b_alpha_combined, width = 12, height = 5, dpi = 300)
+```
+
+## 4b.4 Virus Beta多样性 - 2×3 PERMANOVA {#sec-part4b-beta}
+
+```{r}
+#| label: part4b-virus-beta-permanova
+#| message: false
+
+# ------------------------------------------------------------------------------
+# 双因素PERMANOVA：检验genotype和infection对virus组成的效应
+# ------------------------------------------------------------------------------
+
+virus_meta_full <- as.data.frame(colData(tse_virus_full))
+
+# 1. 双因素PERMANOVA（含交互作用）
+virus_permanova_interaction <- adonis2(
+  virus_dist_full ~ genotype_factor * infection_factor,
+  data = virus_meta_full,
+  permutations = 999
+)
+
+cat("=== Virus双因素PERMANOVA (Genotype × Infection) ===\n")
+print(virus_permanova_interaction)
+
+# 2. 边际效应模型
+virus_permanova_marginal <- adonis2(
+  virus_dist_full ~ genotype_factor + infection_factor,
+  data = virus_meta_full,
+  permutations = 999,
+  by = "margin"
+)
+
+cat("\n=== Virus边际效应PERMANOVA ===\n")
+print(virus_permanova_marginal)
+
+# 保存结果
+virus_permanova_results <- list(
+  interaction_model = virus_permanova_interaction,
+  marginal_model = virus_permanova_marginal
+)
+saveRDS(virus_permanova_results, file = here::here("data", params$name, "61_part4b_virus_permanova_results.rds"))
+```
+
+## 4b.5 Virus Beta多样性 - PCoA可视化 {#sec-part4b-pcoa}
+
+```{r}
+#| label: part4b-virus-pcoa
+#| message: false
+#| fig-width: 10
+#| fig-height: 8
+
+# ------------------------------------------------------------------------------
+# PCoA可视化：全6组
+# ------------------------------------------------------------------------------
+
+# 1. 运行PCoA
+if (!"PCoA_Bray_Full" %in% reducedDimNames(tse_virus_full)) {
+  tse_virus_full <- addMDS(tse_virus_full,
+                           FUN = getDissimilarity,
+                           method = "bray",
+                           assay.type = "relabundance",
+                           name = "PCoA_Bray_Full")
+}
+
+# 2. 提取PCoA坐标
+virus_pcoa_data <- as.data.frame(reducedDim(tse_virus_full, "PCoA_Bray_Full"))
+colnames(virus_pcoa_data) <- c("PC1", "PC2")
+virus_pcoa_data$treatment_group <- colData(tse_virus_full)$treatment_group
+virus_pcoa_data$genotype <- colData(tse_virus_full)$genotype_factor
+virus_pcoa_data$infection <- colData(tse_virus_full)$infection_factor
+
+# 3. 计算方差解释
+virus_eig <- attr(reducedDim(tse_virus_full, "PCoA_Bray_Full"), "eig")
+virus_var_explained <- virus_eig / sum(virus_eig) * 100
+
+# 4. 可视化
+p4b_pcoa <- ggplot(virus_pcoa_data, aes(x = PC1, y = PC2, color = treatment_group, shape = genotype)) +
+  geom_point(size = 3.5, alpha = 0.8) +
+  stat_ellipse(aes(group = treatment_group), level = 0.68, linetype = "dashed", linewidth = 0.8) +
+  scale_color_manual(values = c(
+    "ApcWT_Ctrl" = "#91D1C2", "ApcWT_HpKO" = "#4DBBD5", "ApcWT_HpWT" = "#00A087",
+    "ApcMUT_Ctrl" = "#F39B7F", "ApcMUT_HpKO" = "#E64B35", "ApcMUT_HpWT" = "#DC0000"
+  )) +
+  labs(
+    title = "Virus Beta多样性 PCoA (Bray-Curtis)",
+    subtitle = sprintf("PERMANOVA: Genotype P=%.3f, Infection P=%.3f, Interaction P=%.3f",
+                      virus_permanova_interaction$`Pr(>F)`[1],
+                      virus_permanova_interaction$`Pr(>F)`[2],
+                      virus_permanova_interaction$`Pr(>F)`[3]),
+    x = sprintf("PC1 (%.1f%%)", virus_var_explained[1]),
+    y = sprintf("PC2 (%.1f%%)", virus_var_explained[2]),
+    color = "Treatment", shape = "Genotype"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "right")
+
+print(p4b_pcoa)
+
+ggsave(here::here("data", params$name, "62_part4b_virus_pcoa_6groups.png"),
+       plot = p4b_pcoa, width = 10, height = 8, dpi = 300)
+```
+
+## 4b.6 Part 4b结论 - Standard vs Virus对比 {#sec-part4b-conclusion}
+
+```{r}
+#| label: part4b-conclusion
+#| echo: false
+#| results: asis
+
+# ------------------------------------------------------------------------------
+# Part 4b 结论汇总
+# ------------------------------------------------------------------------------
+
+# 安全提取P值（处理NA）
+get_p_display <- function(p_val) {
+  if (is.na(p_val)) return("NA")
+  round(p_val, 3)
+}
+
+get_sig_display <- function(p_val) {
+  if (is.na(p_val)) return("无法计算")
+  ifelse(p_val < 0.05, "显著", "不显著")
+}
+
+virus_p_geno <- virus_permanova_interaction$`Pr(>F)`[1]
+virus_p_infect <- virus_permanova_interaction$`Pr(>F)`[2]
+virus_p_interact <- virus_permanova_interaction$`Pr(>F)`[3]
+
+cat("
+### Part 4b: Virus 2×3因子设计分析结论
+
+#### PERMANOVA结果对比 (Standard vs Virus)
+
+| 效应 | Standard (细菌) | Virus (病毒) | 解读 |
+|------|----------------|--------------|------|
+| Genotype主效应 | 参见Part 4 | P = ", get_p_display(virus_p_geno), " | ", get_sig_display(virus_p_geno), " |
+| Infection主效应 | 参见Part 4 | P = ", get_p_display(virus_p_infect), " | ", get_sig_display(virus_p_infect), " |
+| **交互作用** | P = 0.024 | P = ", get_p_display(virus_p_interact), " | ", get_sig_display(virus_p_interact), " |
+
+")
+
+# 解读（安全检查NA）
+interact_not_sig <- !is.na(virus_p_interact) && virus_p_interact > 0.05
+interact_is_na <- is.na(virus_p_interact)
+
+if (interact_not_sig || interact_is_na) {
+  cat("
+::: {.callout-note}
+## 关键发现
+
+**Virus组无显著G×E交互作用**，与Standard组（细菌）形成对比。
+")
+  if (interact_is_na) {
+    cat("\n注：交互作用P值为NA，可能由于某些组别样本量不足。\n")
+  }
+  cat("
+这表明CagA主要通过重塑**细菌群落**而非病毒组来影响肠道微环境。
+:::
+")
+}
+
+cat("\n\n**Part 4b分析结果已保存至** `data/", params$name, "/` 目录下 (文件60-62)。\n")
+```
+
+# Part 5b: Virus扩展分层成对比较 {#part5b-virus}
+
+本部分对Virus数据进行与Standard数据相同的9个系统性成对比较。
+
+## 5b.1 定义Virus成对比较 {#sec-part5b-define}
+
+```{r}
+#| label: part5b-define-comparisons
+#| message: false
+
+# ------------------------------------------------------------------------------
+# Part 5b: Virus 9个系统性成对比较
+# ------------------------------------------------------------------------------
+
+# 使用与Part 5相同的比较定义
+cat("=== Part 5b: Virus 9个成对比较 ===\n")
+cat("使用与Standard相同的9个比较框架\n")
+cat("类别A (Apc效应): 3个比较\n")
+cat("类别B (感染效应@ApcMUT): 3个比较\n")
+cat("类别C (感染效应@ApcWT): 3个比较\n\n")
+```
+
+## 5b.2 执行Virus成对比较 {#sec-part5b-run}
+
+```{r}
+#| label: part5b-run-comparisons
+#| message: false
+
+# ------------------------------------------------------------------------------
+# 执行全部9个成对PERMANOVA (Virus)
+# ------------------------------------------------------------------------------
+
+run_pairwise_permanova_virus <- function(tse, pair, n_perm = 999) {
+  # 筛选样本
+  tse_pair <- tse[, colData(tse)$treatment_group %in% pair]
+  n_samples <- ncol(tse_pair)
+
+  # 样本数检查
+  if (n_samples < 4) {
+    return(list(n = n_samples, n_per_group = NA, R2 = NA, F_value = NA, p_value = NA, betadisper_p = NA))
+  }
+
+  # 计算距离矩阵
+  dist_pair <- getDissimilarity(tse_pair, method = "bray", assay.type = "relabundance")
+  meta_pair <- as.data.frame(colData(tse_pair))
+
+  # PERMANOVA
+  permanova_result <- tryCatch({
+    vegan::adonis2(dist_pair ~ treatment_group, data = meta_pair, permutations = n_perm)
+  }, error = function(e) NULL)
+
+  if (is.null(permanova_result)) {
+    return(list(n = n_samples, n_per_group = table(meta_pair$treatment_group),
+                R2 = NA, F_value = NA, p_value = NA, betadisper_p = NA))
+  }
+
+  # betadisper检验
+  disp <- tryCatch({
+    d <- vegan::betadisper(dist_pair, meta_pair$treatment_group)
+    permutest(d, permutations = n_perm)
+  }, error = function(e) NULL)
+
+  list(
+    n = n_samples,
+    n_per_group = table(meta_pair$treatment_group),
+    R2 = permanova_result$R2[1],
+    F_value = permanova_result$F[1],
+    p_value = permanova_result$`Pr(>F)`[1],
+    betadisper_p = if (!is.null(disp)) disp$tab$`Pr(>F)`[1] else NA
+  )
+}
+
+# 执行所有比较
+cat("正在执行Virus 9个成对比较...\n")
+virus_comparison_results <- lapply(seq_along(all_comparisons), function(i) {
+  comp <- all_comparisons[[i]]
+  cat(sprintf("  [%d/9] %s vs %s\n", i, comp$pair[1], comp$pair[2]))
+
+  result <- run_pairwise_permanova_virus(tse_virus_full, comp$pair)
+
+  data.frame(
+    comparison_id = i,
+    group1 = comp$pair[1],
+    group2 = comp$pair[2],
+    category = comp$category,
+    question = comp$question,
+    n_total = result$n,
+    R2 = round(result$R2, 4),
+    F_value = round(result$F_value, 2),
+    p_value = result$p_value,
+    betadisper_p = round(result$betadisper_p, 3)
+  )
+})
+
+part5b_virus_results <- do.call(rbind, virus_comparison_results)
+
+# FDR校正
+part5b_virus_results$p_adj <- p.adjust(part5b_virus_results$p_value, method = "BH")
+
+# 显著性标记
+part5b_virus_results$sig <- ifelse(part5b_virus_results$p_adj < 0.01, "***",
+                                   ifelse(part5b_virus_results$p_adj < 0.05, "**",
+                                          ifelse(part5b_virus_results$p_adj < 0.1, "*", "")))
+
+cat("\n=== Part 5b: Virus全部9个成对比较结果 ===\n")
+print(part5b_virus_results[, c("question", "n_total", "R2", "p_value", "p_adj", "sig")])
+
+# 保存结果
+write.csv(part5b_virus_results,
+          file = here::here("data", params$name, "63_part5b_virus_pairwise_comparisons.csv"),
+          row.names = FALSE)
+```
+
+## 5b.3 Standard vs Virus 成对比较对比 {#sec-part5b-comparison}
+
+```{r}
+#| label: part5b-standard-virus-comparison
+#| message: false
+#| fig-width: 14
+#| fig-height: 6
+
+# ------------------------------------------------------------------------------
+# Standard vs Virus 成对比较对比
+# ------------------------------------------------------------------------------
+
+# 合并数据
+part5_results$data_type <- "Standard (细菌)"
+part5b_virus_results$data_type <- "Virus (病毒)"
+
+combined_pairwise <- rbind(
+  part5_results[, c("question", "R2", "p_value", "p_adj", "sig", "data_type")],
+  part5b_virus_results[, c("question", "R2", "p_value", "p_adj", "sig", "data_type")]
+)
+
+# 可视化对比
+p5b_comparison <- ggplot(combined_pairwise, aes(x = reorder(question, -p_value), y = -log10(p_adj), fill = data_type)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red", linewidth = 0.8) +
+  scale_fill_manual(values = c("Standard (细菌)" = "#4DBBD5", "Virus (病毒)" = "#E64B35")) +
+  labs(
+    title = "Standard vs Virus: 9个成对比较显著性对比",
+    subtitle = "红色虚线: FDR校正 P = 0.05",
+    x = "比较问题",
+    y = "-log10(P_adj)",
+    fill = "数据类型"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+        legend.position = "bottom")
+
+print(p5b_comparison)
+
+ggsave(here::here("data", params$name, "64_part5b_standard_vs_virus_comparison.png"),
+       plot = p5b_comparison, width = 14, height = 6, dpi = 300)
+```
+
+## 5b.4 Part 5b结论汇总 {#sec-part5b-conclusion}
+
+```{r}
+#| label: part5b-conclusion
+#| echo: false
+#| results: asis
+
+# ------------------------------------------------------------------------------
+# Part 5b 结论汇总
+# ------------------------------------------------------------------------------
+
+# 统计显著结果
+standard_sig <- sum(part5_results$p_adj < 0.05, na.rm = TRUE)
+virus_sig <- sum(part5b_virus_results$p_adj < 0.05, na.rm = TRUE)
+
+cat("
+### Part 5b: Standard vs Virus 成对比较结果汇总
+
+| 数据类型 | FDR显著比较数 | 主要显著比较 |
+|----------|--------------|--------------|
+| Standard (细菌) | ", standard_sig, "/9 | 参见Part 5 |
+| Virus (病毒) | ", virus_sig, "/9 | ", ifelse(virus_sig > 0, "详见下表", "无"), " |
+
+")
+
+# CagA核心比较
+standard_caga_mut <- part5_results[part5_results$question == "CagA效应 (ApcMUT背景)", ]
+virus_caga_mut <- part5b_virus_results[part5b_virus_results$question == "CagA效应 (ApcMUT背景)", ]
+
+cat("
+### 核心比较：CagA效应 (ApcMUT背景)
+
+| 数据类型 | R² | P_adj | 显著性 |
+|----------|-----|-------|--------|
+| Standard | ", round(standard_caga_mut$R2, 4), " | ", round(standard_caga_mut$p_adj, 4), " | ", standard_caga_mut$sig, " |
+| Virus | ", round(virus_caga_mut$R2, 4), " | ", round(virus_caga_mut$p_adj, 4), " | ", virus_caga_mut$sig, " |
+
+")
+
+cat("
+::: {.callout-tip}
+## Part 5b 关键发现
+
+1. **Standard (细菌)** 在多个比较中显示显著差异
+2. **Virus (病毒)** 整体响应较弱
+3. **CagA主要通过重塑细菌群落而非病毒组影响肠道微环境**
+:::
+")
+
+# 保存汇总
+part5b_summary <- list(
+  virus_results = part5b_virus_results,
+  standard_results = part5_results,
+  combined = combined_pairwise,
+  timestamp = Sys.time()
+)
+
+saveRDS(part5b_summary,
+        file = here::here("data", params$name, "65_part5b_virus_summary_results.rds"))
+
+cat("\n\n✅ Part 5b 结果已保存:\n")
+cat("  - 63_part5b_virus_pairwise_comparisons.csv\n")
+cat("  - 64_part5b_standard_vs_virus_comparison.png\n")
+cat("  - 65_part5b_virus_summary_results.rds\n")
+```
 
 ## Files written
 

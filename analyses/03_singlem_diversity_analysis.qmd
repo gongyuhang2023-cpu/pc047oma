@@ -1419,89 +1419,61 @@ write.csv(
 #| label: lyrebird-ancombc
 
 # ==============================================================================
-# ANCOM-BC2 差异丰度分析 (带错误处理防止R session崩溃)
+# ANCOM-BC2 差异丰度分析
 # ==============================================================================
 cat("=== Lyrebird ANCOM-BC2 差异丰度分析 ===\n")
 
 # 准备数据：需要 counts assay
 tse_daa_lyrebird <- tse_lyrebird_corepair
 
-# 检查数据质量
-cat("数据检查:\n")
-cat("  样本数:", ncol(tse_daa_lyrebird), "\n")
-cat("  OTU数:", nrow(tse_daa_lyrebird), "\n")
+# 运行 ANCOM-BC2
+ancombc_output_lyrebird <- ancombc2(
+  data = tse_daa_lyrebird,
+  assay.type = "counts",
+  fix_formula = "treatment_group",
+  p_adj_method = "fdr",
+  prv_cut = 0.1,
+  lib_cut = 0,
+  group = "treatment_group",
+  struc_zero = TRUE,
+  neg_lb = TRUE,
+  alpha = 0.05,
+  global = FALSE,
+  verbose = TRUE
+)
 
-# 过滤低丰度OTU，减少计算负担
-row_sums <- rowSums(assay(tse_daa_lyrebird, "counts"))
-keep_rows <- row_sums > 0
-tse_daa_lyrebird <- tse_daa_lyrebird[keep_rows, ]
-cat("  过滤后OTU数:", nrow(tse_daa_lyrebird), "\n")
+# 提取结果
+ancombc_res_lyrebird <- ancombc_output_lyrebird$res
 
-# 使用tryCatch防止崩溃
-ancombc_output_lyrebird <- tryCatch({
-  ancombc2(
-    data = tse_daa_lyrebird,
-    assay.type = "counts",
-    fix_formula = "treatment_group",
-    p_adj_method = "fdr",
-    prv_cut = 0.1,
-    lib_cut = 0,
-    group = "treatment_group",
-    struc_zero = TRUE,
-    neg_lb = TRUE,
-    alpha = 0.05,
-    global = FALSE,
-    verbose = FALSE  # 减少输出
+# 动态查找列名
+lfc_col_lyrebird <- grep("^lfc_", colnames(ancombc_res_lyrebird), value = TRUE)[1]
+q_col_lyrebird <- grep("^q_", colnames(ancombc_res_lyrebird), value = TRUE)[1]
+
+cat("使用的列名:\n")
+cat("  LFC 列:", lfc_col_lyrebird, "\n")
+cat("  Q 值列:", q_col_lyrebird, "\n")
+
+# 添加分类信息
+ancombc_res_lyrebird <- ancombc_res_lyrebird |>
+  dplyr::left_join(
+    rowData(tse_daa_lyrebird) |> as.data.frame() |> rownames_to_column("taxon"),
+    by = "taxon"
   )
-}, error = function(e) {
-  cat("\n⚠ ANCOM-BC2 运行失败:", conditionMessage(e), "\n")
-  cat("跳过Lyrebird差异丰度分析，继续后续分析...\n")
-  return(NULL)
-})
 
-# 清理内存
-gc()
+# 按 q 值排序并取 Top 20
+ancombc_top20_lyrebird <- ancombc_res_lyrebird |>
+  arrange(.data[[q_col_lyrebird]]) |>
+  head(20)
 
-# 检查ANCOM-BC是否成功运行
-if (!is.null(ancombc_output_lyrebird)) {
-  # 提取结果
-  ancombc_res_lyrebird <- ancombc_output_lyrebird$res
+cat("\n=== Lyrebird ANCOM-BC Top 20 差异噬菌体 OTU ===\n")
+print(ancombc_top20_lyrebird |> dplyr::select(taxon, Family, all_of(c(lfc_col_lyrebird, q_col_lyrebird))))
 
-  # 动态查找列名
-  lfc_col_lyrebird <- grep("^lfc_", colnames(ancombc_res_lyrebird), value = TRUE)[1]
-  q_col_lyrebird <- grep("^q_", colnames(ancombc_res_lyrebird), value = TRUE)[1]
-
-  cat("使用的列名:\n")
-  cat("  LFC 列:", lfc_col_lyrebird, "\n")
-  cat("  Q 值列:", q_col_lyrebird, "\n")
-
-  # 添加分类信息
-  ancombc_res_lyrebird <- ancombc_res_lyrebird |>
-    dplyr::left_join(
-      rowData(tse_daa_lyrebird) |> as.data.frame() |> rownames_to_column("taxon"),
-      by = "taxon"
-    )
-
-  # 按 q 值排序并取 Top 20
-  ancombc_top20_lyrebird <- ancombc_res_lyrebird |>
-    arrange(.data[[q_col_lyrebird]]) |>
-    head(20)
-
-  cat("\n=== Lyrebird ANCOM-BC Top 20 差异噬菌体 OTU ===\n")
-  print(ancombc_top20_lyrebird |> dplyr::select(taxon, Family, all_of(c(lfc_col_lyrebird, q_col_lyrebird))))
-
-  # 保存完整结果
-  write.csv(
-    ancombc_res_lyrebird,
-    file = here::here("data", params$name, "24_ancombc_lyrebird_full.csv"),
-    row.names = FALSE
-  )
-} else {
-  cat("\n⚠ Lyrebird ANCOM-BC 分析被跳过，无结果可展示\n")
-  ancombc_res_lyrebird <- NULL
-  lfc_col_lyrebird <- NULL
-  q_col_lyrebird <- NULL
-}
+# 保存完整结果
+write.csv(
+  ancombc_res_lyrebird,
+  file = here::here("data", params$name, "24_ancombc_lyrebird_full.csv"),
+  row.names = FALSE
+)
 ```
 
 ```{r}
@@ -1510,56 +1482,47 @@ if (!is.null(ancombc_output_lyrebird)) {
 #| fig-height: 8
 
 # ==============================================================================
-# 火山图可视化 (仅在ANCOM-BC成功时运行)
+# 火山图可视化
 # ==============================================================================
 
-if (!is.null(ancombc_res_lyrebird)) {
-  # 准备火山图数据
-  volcano_data_lyrebird <- ancombc_res_lyrebird |>
-    mutate(
-      sig = .data[[q_col_lyrebird]] < 0.05,
-      direction = case_when(
-        .data[[q_col_lyrebird]] < 0.05 & .data[[lfc_col_lyrebird]] > 0 ~ "Up in HpWT",
-        .data[[q_col_lyrebird]] < 0.05 & .data[[lfc_col_lyrebird]] < 0 ~ "Up in HpKO",
-        TRUE ~ "NS"
-      )
+# 准备火山图数据
+volcano_data_lyrebird <- ancombc_res_lyrebird |>
+  mutate(
+    sig = .data[[q_col_lyrebird]] < 0.05,
+    direction = case_when(
+      .data[[q_col_lyrebird]] < 0.05 & .data[[lfc_col_lyrebird]] > 0 ~ "Up in HpWT",
+      .data[[q_col_lyrebird]] < 0.05 & .data[[lfc_col_lyrebird]] < 0 ~ "Up in HpKO",
+      TRUE ~ "NS"
     )
-
-  # 统计差异 OTU 数量
-  n_sig_up_lyrebird <- sum(volcano_data_lyrebird$direction == "Up in HpWT", na.rm = TRUE)
-  n_sig_down_lyrebird <- sum(volcano_data_lyrebird$direction == "Up in HpKO", na.rm = TRUE)
-  cat("\n差异噬菌体 OTU 统计:\n")
-  cat("  Up in HpWT (CagA+):", n_sig_up_lyrebird, "\n")
-  cat("  Up in HpKO (CagA-):", n_sig_down_lyrebird, "\n")
-
-  p_volcano_lyrebird <- ggplot(volcano_data_lyrebird, aes(x = .data[[lfc_col_lyrebird]], y = -log10(.data[[q_col_lyrebird]]))) +
-    geom_point(aes(color = direction), alpha = 0.6, size = 2) +
-    scale_color_manual(values = c("Up in HpWT" = "#E41A1C", "Up in HpKO" = "#377EB8", "NS" = "grey60")) +
-    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "grey40") +
-    geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
-    theme_bw() +
-    labs(
-      title = "Lyrebird: Differential Phage Abundance (ANCOM-BC2)",
-      subtitle = paste0("Up in HpWT: ", n_sig_up_lyrebird, " | Up in HpKO: ", n_sig_down_lyrebird),
-      x = "Log Fold Change (HpWT vs HpKO)",
-      y = "-log10(Q-value)",
-      color = "Direction"
-    )
-
-  print(p_volcano_lyrebird)
-
-  ggsave(
-    filename = here::here("data", params$name, "25_volcano_ancombc_lyrebird.png"),
-    plot = p_volcano_lyrebird, width = 10, height = 8, dpi = 300
   )
-} else {
-  cat("\n⚠ 跳过火山图绑定 (ANCOM-BC 未成功运行)\n")
-  n_sig_up_lyrebird <- 0
-  n_sig_down_lyrebird <- 0
-}
 
-# 清理内存
-gc()
+# 统计差异 OTU 数量
+n_sig_up_lyrebird <- sum(volcano_data_lyrebird$direction == "Up in HpWT", na.rm = TRUE)
+n_sig_down_lyrebird <- sum(volcano_data_lyrebird$direction == "Up in HpKO", na.rm = TRUE)
+cat("\n差异噬菌体 OTU 统计:\n")
+cat("  Up in HpWT (CagA+):", n_sig_up_lyrebird, "\n")
+cat("  Up in HpKO (CagA-):", n_sig_down_lyrebird, "\n")
+
+p_volcano_lyrebird <- ggplot(volcano_data_lyrebird, aes(x = .data[[lfc_col_lyrebird]], y = -log10(.data[[q_col_lyrebird]]))) +
+  geom_point(aes(color = direction), alpha = 0.6, size = 2) +
+  scale_color_manual(values = c("Up in HpWT" = "#E41A1C", "Up in HpKO" = "#377EB8", "NS" = "grey60")) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "grey40") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
+  theme_bw() +
+  labs(
+    title = "Lyrebird: Differential Phage Abundance (ANCOM-BC2)",
+    subtitle = paste0("Up in HpWT: ", n_sig_up_lyrebird, " | Up in HpKO: ", n_sig_down_lyrebird),
+    x = "Log Fold Change (HpWT vs HpKO)",
+    y = "-log10(Q-value)",
+    color = "Direction"
+  )
+
+p_volcano_lyrebird
+
+ggsave(
+  filename = here::here("data", params$name, "25_volcano_ancombc_lyrebird.png"),
+  plot = p_volcano_lyrebird, width = 10, height = 8, dpi = 300
+)
 ```
 
 # Part 3: 结果汇总
@@ -2751,549 +2714,349 @@ saveRDS(
 cat("\n\n**分析结果已保存至** `data/", params$name, "/` 目录下。\n")
 ```
 
-# Part 5: 扩展分层成对比较 - 系统发育与噬菌体层面
+# Part 5: 系统性成对比较扩展分析 {#part5-extended}
 
-::: {.callout-note}
-## 分析目的
+本部分在Part 4的2×3析因分析基础上，进行更详细的9个成对比较，系统性检验不同实验组之间的菌群差异。
 
-本部分对SingleM（系统发育）和Lyrebird（噬菌体）数据进行与01分析Part 5相同的9个成对比较，以验证：
-
-1. **系统发育层面的G×E交互** - UniFrac距离是否也呈现CagA效应的遗传背景依赖性？
-2. **噬菌体层面的变化模式** - 噬菌体是否与细菌协同变化？
-3. **跨分析一致性** - 三个分析（01物种、02功能、03系统发育）的结论是否一致？
-:::
-
-## 21. Part 5 数据准备
+## 21. 系统性成对比较框架 {#sec-part5-framework}
 
 ```{r}
-#| label: part5-data-prep
-#| message: false
+#| label: part5-comparison-framework
+#| echo: false
 
-# ==============================================================================
-# Part 5 数据准备：确保变量存在
-# ==============================================================================
+cat("
+### 9个系统性成对比较设计
 
-# 检查并创建所需的TSE对象
-if (!exists("tse_singlem_all")) {
-  cat("正在从Part 4数据准备中获取数据...\n")
-  tse_singlem_all <- tse_singlem_ca_cleaned
-}
+本分析扩展Part 4的整体分析，对6个实验组进行9个系统性成对比较：
 
-if (!exists("tse_lyrebird_all")) {
-  tse_lyrebird_all <- tse_lyrebird_ca_cleaned
-}
+**类别1: 不同感染状态下的Apc效应 (3个比较)**
 
-# 确保relabundance已计算
-if (!"relabundance" %in% assayNames(tse_singlem_all)) {
-  tse_singlem_all <- transformAssay(tse_singlem_all,
-                                     assay.type = "counts",
-                                     method = "relabundance")
-}
+| 编号 | 比较 | 问题 |
+|------|------|------|
+| 1 | ApcMUT_Ctrl vs ApcWT_Ctrl | 未感染时，Apc突变的基线效应 |
+| 2 | ApcMUT_HpKO vs ApcWT_HpKO | HpKO感染下，Apc突变的效应 |
+| 3 | ApcMUT_HpWT vs ApcWT_HpWT | CagA+感染下，Apc突变的效应 |
 
-if (!"relabundance" %in% assayNames(tse_lyrebird_all)) {
-  tse_lyrebird_all <- transformAssay(tse_lyrebird_all,
-                                      assay.type = "counts",
-                                      method = "relabundance")
-}
+**类别2: ApcMUT背景下的感染效应 (3个比较)**
 
-cat("=== Part 5 数据准备完成 ===\n")
-cat("SingleM 样本数:", ncol(tse_singlem_all), "\n")
-cat("Lyrebird 样本数:", ncol(tse_lyrebird_all), "\n")
-cat("SingleM 各组分布:\n")
-print(table(tse_singlem_all$treatment_group))
+| 编号 | 比较 | 问题 |
+|------|------|------|
+| 4 | ApcMUT_HpWT vs ApcMUT_Ctrl | ApcMUT中，CagA+感染 vs 未感染 |
+| 5 | ApcMUT_HpKO vs ApcMUT_Ctrl | ApcMUT中，CagA-感染 vs 未感染 |
+| 6 | ApcMUT_HpWT vs ApcMUT_HpKO | **核心比较**: ApcMUT中CagA效应 |
+
+**类别3: ApcWT背景下的感染效应 (3个比较)**
+
+| 编号 | 比较 | 问题 |
+|------|------|------|
+| 7 | ApcWT_HpWT vs ApcWT_Ctrl | ApcWT中，CagA+感染 vs 未感染 |
+| 8 | ApcWT_HpKO vs ApcWT_Ctrl | ApcWT中，CagA-感染 vs 未感染 |
+| 9 | ApcWT_HpWT vs ApcWT_HpKO | ApcWT中CagA效应 |
+")
 ```
 
-## 22. 定义9个成对比较（与01分析Part 5一致）
+## 22. SingleM Beta多样性9个成对比较 {#sec-part5-singlem-pairwise}
 
 ```{r}
-#| label: part5-define-comparisons
+#| label: part5-singlem-9comparisons
+#| warning: false
 #| message: false
 
-# ==============================================================================
-# Part 5: 系统发育和噬菌体层面的系统性分层成对比较
-# 与01分析Part 5和02分析Part 10完全对应
-# ==============================================================================
-
-# 定义全部9个成对比较
-all_comparisons_phylo <- list(
-  # === 类别A: Apc效应在不同感染状态下 ===
-  list(
-    pair = c("ApcMUT_Ctrl", "ApcWT_Ctrl"),
-    category = "Apc效应",
-    question = "Apc基线效应 (Ctrl组)",
-    hypothesis = "Apc突变本身改变系统发育结构"
-  ),
-  list(
-    pair = c("ApcMUT_HpKO", "ApcWT_HpKO"),
-    category = "Apc效应",
-    question = "Apc效应 (HpKO感染后)",
-    hypothesis = "感染后Apc效应是否消失?"
-  ),
-  list(
-    pair = c("ApcMUT_HpWT", "ApcWT_HpWT"),
-    category = "Apc效应",
-    question = "Apc效应 (HpWT感染后)",
-    hypothesis = "CagA+感染后Apc效应是否消失?"
-  ),
-
-  # === 类别B: 感染效应在ApcMUT背景下 ===
-  list(
-    pair = c("ApcMUT_Ctrl", "ApcMUT_HpKO"),
-    category = "感染效应@ApcMUT",
-    question = "感染效应 (ApcMUT, 无CagA)",
-    hypothesis = "HpKO感染本身的系统发育效应"
-  ),
-  list(
-    pair = c("ApcMUT_Ctrl", "ApcMUT_HpWT"),
-    category = "感染效应@ApcMUT",
-    question = "感染+CagA效应 (ApcMUT)",
-    hypothesis = "HpWT感染的联合效应"
-  ),
-  list(
-    pair = c("ApcMUT_HpKO", "ApcMUT_HpWT"),
-    category = "CagA效应",
-    question = "CagA效应 (ApcMUT背景)",
-    hypothesis = "核心问题: CagA特异效应"
-  ),
-
-  # === 类别C: 感染效应在ApcWT背景下 ===
-  list(
-    pair = c("ApcWT_Ctrl", "ApcWT_HpKO"),
-    category = "感染效应@ApcWT",
-    question = "感染效应 (ApcWT, 无CagA)",
-    hypothesis = "野生型中HpKO感染效应"
-  ),
-  list(
-    pair = c("ApcWT_Ctrl", "ApcWT_HpWT"),
-    category = "感染效应@ApcWT",
-    question = "感染+CagA效应 (ApcWT)",
-    hypothesis = "野生型中HpWT感染效应"
-  ),
-  list(
-    pair = c("ApcWT_HpKO", "ApcWT_HpWT"),
-    category = "CagA效应",
-    question = "CagA效应 (ApcWT背景)",
-    hypothesis = "野生型中CagA是否有效?"
-  )
+# 定义9个比较对
+comparisons_9 <- list(
+  # 类别1: 不同感染状态下的Apc效应
+  list(g1 = "ApcMUT_Ctrl", g2 = "ApcWT_Ctrl", cat = "Apc_Effect", desc = "Ctrl下Apc效应"),
+  list(g1 = "ApcMUT_HpKO", g2 = "ApcWT_HpKO", cat = "Apc_Effect", desc = "HpKO下Apc效应"),
+  list(g1 = "ApcMUT_HpWT", g2 = "ApcWT_HpWT", cat = "Apc_Effect", desc = "HpWT下Apc效应"),
+  # 类别2: ApcMUT背景下的感染效应
+  list(g1 = "ApcMUT_HpWT", g2 = "ApcMUT_Ctrl", cat = "Infection_MUT", desc = "ApcMUT: HpWT vs Ctrl"),
+  list(g1 = "ApcMUT_HpKO", g2 = "ApcMUT_Ctrl", cat = "Infection_MUT", desc = "ApcMUT: HpKO vs Ctrl"),
+  list(g1 = "ApcMUT_HpWT", g2 = "ApcMUT_HpKO", cat = "Infection_MUT", desc = "ApcMUT: CagA效应"),
+  # 类别3: ApcWT背景下的感染效应
+  list(g1 = "ApcWT_HpWT", g2 = "ApcWT_Ctrl", cat = "Infection_WT", desc = "ApcWT: HpWT vs Ctrl"),
+  list(g1 = "ApcWT_HpKO", g2 = "ApcWT_Ctrl", cat = "Infection_WT", desc = "ApcWT: HpKO vs Ctrl"),
+  list(g1 = "ApcWT_HpWT", g2 = "ApcWT_HpKO", cat = "Infection_WT", desc = "ApcWT: CagA效应")
 )
 
-cat("=== Part 5: 系统发育与噬菌体层面的9个成对比较 ===\n")
-cat("类别A (Apc效应): 3个比较\n")
-cat("类别B (感染效应@ApcMUT): 3个比较\n")
-cat("类别C (感染效应@ApcWT): 3个比较\n\n")
-```
+# 计算SingleM距离矩阵
+singlem_counts <- assay(tse_singlem_all, "counts")
+singlem_rel <- t(t(singlem_counts) / colSums(singlem_counts))
+singlem_bray <- vegan::vegdist(t(singlem_rel), method = "bray")
+singlem_meta <- as.data.frame(colData(tse_singlem_all))
 
-## 23. 执行SingleM成对比较（系统发育层面）
+# 执行9个PERMANOVA比较
+singlem_9comp_results <- lapply(seq_along(comparisons_9), function(i) {
+  comp <- comparisons_9[[i]]
 
-```{r}
-#| label: part5-singlem-comparisons
-#| message: false
-
-# ==============================================================================
-# SingleM: 使用Bray-Curtis和UniFrac距离进行成对比较
-# ==============================================================================
-
-run_pairwise_permanova_phylo <- function(tse, pair, dist_method = "bray", n_perm = 999) {
   # 筛选样本
-  tse_pair <- tse[, colData(tse)$treatment_group %in% pair]
-  n_samples <- ncol(tse_pair)
-
-  # 样本数检查
-  if (n_samples < 4) {
-    return(list(n = n_samples, R2 = NA, F_value = NA, p_value = NA, betadisper_p = NA))
+  idx <- singlem_meta$treatment_group %in% c(comp$g1, comp$g2)
+  if (sum(idx) < 4) {
+    return(data.frame(
+      Comparison = paste(comp$g1, "vs", comp$g2),
+      Category = comp$cat,
+      Description = comp$desc,
+      n_g1 = sum(singlem_meta$treatment_group == comp$g1),
+      n_g2 = sum(singlem_meta$treatment_group == comp$g2),
+      R2 = NA, F_value = NA, P_value = NA
+    ))
   }
 
-  # 计算距离矩阵
-  if (dist_method == "bray") {
-    if (!"relabundance" %in% assayNames(tse_pair)) {
-      tse_pair <- transformAssay(tse_pair, assay.type = "counts", method = "relabundance")
-    }
-    dist_pair <- getDissimilarity(tse_pair, method = "bray", assay.type = "relabundance")
-  } else if (dist_method %in% c("unifrac", "wunifrac")) {
-    # UniFrac需要系统发育树
-    if (is.null(rowTree(tse_pair))) {
-      return(list(n = n_samples, R2 = NA, F_value = NA, p_value = NA, betadisper_p = NA))
-    }
-    weighted <- (dist_method == "wunifrac")
-    dist_pair <- mia::calculateUnifrac(tse_pair, weighted = weighted, assay.type = "counts")
-  } else {
-    return(list(n = n_samples, R2 = NA, F_value = NA, p_value = NA, betadisper_p = NA))
-  }
-
-  meta_pair <- as.data.frame(colData(tse_pair))
+  sub_meta <- singlem_meta[idx, ]
+  sub_dist <- as.dist(as.matrix(singlem_bray)[idx, idx])
 
   # PERMANOVA
-  permanova_result <- vegan::adonis2(
-    dist_pair ~ treatment_group,
-    data = meta_pair,
-    permutations = n_perm
-  )
-
-  # betadisper检验
-  disp <- tryCatch({
-    vegan::betadisper(dist_pair, meta_pair$treatment_group)
-  }, error = function(e) NULL)
-
-  betadisper_p <- NA
-  if (!is.null(disp)) {
-    disp_test <- permutest(disp, permutations = n_perm)
-    betadisper_p <- disp_test$tab$`Pr(>F)`[1]
-  }
-
-  list(
-    n = n_samples,
-    R2 = permanova_result$R2[1],
-    F_value = permanova_result$F[1],
-    p_value = permanova_result$`Pr(>F)`[1],
-    betadisper_p = betadisper_p
-  )
-}
-
-# 执行SingleM比较（Bray-Curtis）
-cat("正在执行SingleM 9个成对比较 (Bray-Curtis)...\n")
-singlem_bc_results <- lapply(seq_along(all_comparisons_phylo), function(i) {
-  comp <- all_comparisons_phylo[[i]]
-  cat(sprintf("  [%d/9] %s vs %s\n", i, comp$pair[1], comp$pair[2]))
-
-  result <- run_pairwise_permanova_phylo(tse_singlem_all, comp$pair, "bray")
-
-  data.frame(
-    comparison_id = i,
-    group1 = comp$pair[1],
-    group2 = comp$pair[2],
-    category = comp$category,
-    question = comp$question,
-    n_total = result$n,
-    R2 = round(result$R2, 4),
-    F_value = round(result$F_value, 2),
-    p_value = result$p_value,
-    betadisper_p = round(result$betadisper_p, 3)
-  )
-})
-
-part5_singlem_bc <- do.call(rbind, singlem_bc_results)
-part5_singlem_bc$p_adj <- p.adjust(part5_singlem_bc$p_value, method = "BH")
-part5_singlem_bc$sig <- ifelse(part5_singlem_bc$p_adj < 0.01, "***",
-                                ifelse(part5_singlem_bc$p_adj < 0.05, "**",
-                                       ifelse(part5_singlem_bc$p_adj < 0.1, "*", "")))
-
-cat("\n=== SingleM Bray-Curtis 成对比较结果 ===\n")
-print(part5_singlem_bc[, c("question", "n_total", "R2", "p_value", "p_adj", "sig")])
-
-# 保存结果
-write.csv(part5_singlem_bc,
-          file = here::here("data", params$name, "50_part5_singlem_bc_pairwise.csv"),
-          row.names = FALSE)
-```
-
-```{r}
-#| label: part5-singlem-unifrac
-#| message: false
-
-# 执行SingleM比较（Unweighted UniFrac - 如果有系统发育树）
-if (!is.null(rowTree(tse_singlem_all))) {
-  cat("\n正在执行SingleM 9个成对比较 (Unweighted UniFrac)...\n")
-
-  singlem_uf_results <- lapply(seq_along(all_comparisons_phylo), function(i) {
-    comp <- all_comparisons_phylo[[i]]
-    cat(sprintf("  [%d/9] %s vs %s\n", i, comp$pair[1], comp$pair[2]))
-
-    result <- run_pairwise_permanova_phylo(tse_singlem_all, comp$pair, "unifrac")
-
+  result <- tryCatch({
+    perm <- vegan::adonis2(sub_dist ~ treatment_group, data = sub_meta, permutations = 999)
     data.frame(
-      comparison_id = i,
-      group1 = comp$pair[1],
-      group2 = comp$pair[2],
-      category = comp$category,
-      question = comp$question,
-      n_total = result$n,
-      R2 = round(result$R2, 4),
-      p_value = result$p_value
+      Comparison = paste(comp$g1, "vs", comp$g2),
+      Category = comp$cat,
+      Description = comp$desc,
+      n_g1 = sum(sub_meta$treatment_group == comp$g1),
+      n_g2 = sum(sub_meta$treatment_group == comp$g2),
+      R2 = round(perm$R2[1], 4),
+      F_value = round(perm$F[1], 3),
+      P_value = perm$`Pr(>F)`[1]
+    )
+  }, error = function(e) {
+    data.frame(
+      Comparison = paste(comp$g1, "vs", comp$g2),
+      Category = comp$cat, Description = comp$desc,
+      n_g1 = NA, n_g2 = NA, R2 = NA, F_value = NA, P_value = NA
     )
   })
 
-  part5_singlem_uf <- do.call(rbind, singlem_uf_results)
-  part5_singlem_uf$p_adj <- p.adjust(part5_singlem_uf$p_value, method = "BH")
-  part5_singlem_uf$sig <- ifelse(part5_singlem_uf$p_adj < 0.01, "***",
-                                  ifelse(part5_singlem_uf$p_adj < 0.05, "**",
-                                         ifelse(part5_singlem_uf$p_adj < 0.1, "*", "")))
-
-  cat("\n=== SingleM Unweighted UniFrac 成对比较结果 ===\n")
-  print(part5_singlem_uf[, c("question", "n_total", "R2", "p_value", "p_adj", "sig")])
-
-  write.csv(part5_singlem_uf,
-            file = here::here("data", params$name, "51_part5_singlem_unifrac_pairwise.csv"),
-            row.names = FALSE)
-} else {
-  cat("注意: SingleM数据无系统发育树，跳过UniFrac分析\n")
-  part5_singlem_uf <- NULL
-}
-```
-
-## 24. 执行Lyrebird成对比较（噬菌体层面）
-
-```{r}
-#| label: part5-lyrebird-comparisons
-#| message: false
-
-# ==============================================================================
-# Lyrebird: 噬菌体层面成对比较
-# ==============================================================================
-
-cat("\n正在执行Lyrebird 9个成对比较 (Bray-Curtis)...\n")
-
-lyrebird_bc_results <- lapply(seq_along(all_comparisons_phylo), function(i) {
-  comp <- all_comparisons_phylo[[i]]
-  cat(sprintf("  [%d/9] %s vs %s\n", i, comp$pair[1], comp$pair[2]))
-
-  result <- run_pairwise_permanova_phylo(tse_lyrebird_all, comp$pair, "bray")
-
-  data.frame(
-    comparison_id = i,
-    group1 = comp$pair[1],
-    group2 = comp$pair[2],
-    category = comp$category,
-    question = comp$question,
-    n_total = result$n,
-    R2 = round(result$R2, 4),
-    F_value = round(result$F_value, 2),
-    p_value = result$p_value,
-    betadisper_p = round(result$betadisper_p, 3)
-  )
+  return(result)
 })
 
-part5_lyrebird_bc <- do.call(rbind, lyrebird_bc_results)
-part5_lyrebird_bc$p_adj <- p.adjust(part5_lyrebird_bc$p_value, method = "BH")
-part5_lyrebird_bc$sig <- ifelse(part5_lyrebird_bc$p_adj < 0.01, "***",
-                                 ifelse(part5_lyrebird_bc$p_adj < 0.05, "**",
-                                        ifelse(part5_lyrebird_bc$p_adj < 0.1, "*", "")))
+singlem_9comp_df <- do.call(rbind, singlem_9comp_results)
+singlem_9comp_df$P_adj <- p.adjust(singlem_9comp_df$P_value, method = "BH")
+singlem_9comp_df$Sig <- ifelse(singlem_9comp_df$P_adj < 0.05, "***",
+                               ifelse(singlem_9comp_df$P_value < 0.05, "*", ""))
 
-cat("\n=== Lyrebird Bray-Curtis 成对比较结果 ===\n")
-print(part5_lyrebird_bc[, c("question", "n_total", "R2", "p_value", "p_adj", "sig")])
-
-write.csv(part5_lyrebird_bc,
-          file = here::here("data", params$name, "52_part5_lyrebird_bc_pairwise.csv"),
-          row.names = FALSE)
+knitr::kable(singlem_9comp_df, caption = "SingleM Beta多样性9个成对PERMANOVA比较")
 ```
 
-## 25. Part 5 综合对比与可视化
+## 23. Lyrebird Beta多样性9个成对比较 {#sec-part5-lyrebird-pairwise}
 
 ```{r}
-#| label: part5-comparison-visualization
+#| label: part5-lyrebird-9comparisons
+#| warning: false
 #| message: false
-#| fig-width: 14
-#| fig-height: 8
 
-# ==============================================================================
-# 对比SingleM和Lyrebird的结果
-# ==============================================================================
+# 计算Lyrebird距离矩阵
+lyrebird_counts <- assay(tse_lyrebird_all, "counts")
+lyrebird_rel <- t(t(lyrebird_counts) / colSums(lyrebird_counts))
+lyrebird_bray <- vegan::vegdist(t(lyrebird_rel), method = "bray")
+lyrebird_meta <- as.data.frame(colData(tse_lyrebird_all))
 
-# 合并结果
-comparison_all <- data.frame(
-  question = part5_singlem_bc$question,
-  singlem_R2 = part5_singlem_bc$R2,
-  singlem_p_adj = part5_singlem_bc$p_adj,
-  singlem_sig = part5_singlem_bc$sig,
-  lyrebird_R2 = part5_lyrebird_bc$R2,
-  lyrebird_p_adj = part5_lyrebird_bc$p_adj,
-  lyrebird_sig = part5_lyrebird_bc$sig
-)
+# 执行9个PERMANOVA比较
+lyrebird_9comp_results <- lapply(seq_along(comparisons_9), function(i) {
+  comp <- comparisons_9[[i]]
 
-# 判断一致性模式
-comparison_all$consistency <- case_when(
-  comparison_all$singlem_p_adj < 0.05 & comparison_all$lyrebird_p_adj < 0.05 ~ "两者均显著",
-  comparison_all$singlem_p_adj < 0.05 & comparison_all$lyrebird_p_adj > 0.1 ~ "仅细菌显著",
-  comparison_all$singlem_p_adj > 0.1 & comparison_all$lyrebird_p_adj < 0.05 ~ "仅噬菌体显著",
-  TRUE ~ "两者均不显著"
-)
+  # 筛选样本
+  idx <- lyrebird_meta$treatment_group %in% c(comp$g1, comp$g2)
+  if (sum(idx) < 4) {
+    return(data.frame(
+      Comparison = paste(comp$g1, "vs", comp$g2),
+      Category = comp$cat,
+      Description = comp$desc,
+      n_g1 = sum(lyrebird_meta$treatment_group == comp$g1),
+      n_g2 = sum(lyrebird_meta$treatment_group == comp$g2),
+      R2 = NA, F_value = NA, P_value = NA
+    ))
+  }
 
-cat("=== SingleM vs Lyrebird 对比 ===\n\n")
-print(comparison_all[, c("question", "singlem_R2", "singlem_sig",
-                          "lyrebird_R2", "lyrebird_sig", "consistency")])
+  sub_meta <- lyrebird_meta[idx, ]
+  sub_dist <- as.dist(as.matrix(lyrebird_bray)[idx, idx])
 
-write.csv(comparison_all,
-          file = here::here("data", params$name, "53_part5_singlem_lyrebird_comparison.csv"),
-          row.names = FALSE)
+  # PERMANOVA
+  result <- tryCatch({
+    perm <- vegan::adonis2(sub_dist ~ treatment_group, data = sub_meta, permutations = 999)
+    data.frame(
+      Comparison = paste(comp$g1, "vs", comp$g2),
+      Category = comp$cat,
+      Description = comp$desc,
+      n_g1 = sum(sub_meta$treatment_group == comp$g1),
+      n_g2 = sum(sub_meta$treatment_group == comp$g2),
+      R2 = round(perm$R2[1], 4),
+      F_value = round(perm$F[1], 3),
+      P_value = perm$`Pr(>F)`[1]
+    )
+  }, error = function(e) {
+    data.frame(
+      Comparison = paste(comp$g1, "vs", comp$g2),
+      Category = comp$cat, Description = comp$desc,
+      n_g1 = NA, n_g2 = NA, R2 = NA, F_value = NA, P_value = NA
+    )
+  })
 
-# 可视化
-plot_data <- comparison_all |>
-  tidyr::pivot_longer(
-    cols = c(singlem_R2, lyrebird_R2),
-    names_to = "data_type",
-    values_to = "R2"
-  ) |>
-  mutate(data_type = ifelse(data_type == "singlem_R2", "SingleM (细菌)", "Lyrebird (噬菌体)"))
+  return(result)
+})
 
-p5_viz <- ggplot(plot_data, aes(x = question, y = R2 * 100, fill = data_type)) +
-  geom_bar(stat = "identity", position = position_dodge(width = 0.8),
-           width = 0.7, alpha = 0.8) +
-  scale_fill_manual(values = c("SingleM (细菌)" = "#E64B35", "Lyrebird (噬菌体)" = "#00A087"),
-                    name = "数据类型") +
-  theme_bw(base_size = 11) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+lyrebird_9comp_df <- do.call(rbind, lyrebird_9comp_results)
+lyrebird_9comp_df$P_adj <- p.adjust(lyrebird_9comp_df$P_value, method = "BH")
+lyrebird_9comp_df$Sig <- ifelse(lyrebird_9comp_df$P_adj < 0.05, "***",
+                                ifelse(lyrebird_9comp_df$P_value < 0.05, "*", ""))
+
+knitr::kable(lyrebird_9comp_df, caption = "Lyrebird Beta多样性9个成对PERMANOVA比较")
+```
+
+## 24. SingleM与Lyrebird结果对比 {#sec-part5-comparison}
+
+```{r}
+#| label: part5-combined-comparison
+#| fig-width: 12
+#| fig-height: 6
+#| warning: false
+
+# 合并两个数据框
+singlem_9comp_df$DataType <- "SingleM (细菌)"
+lyrebird_9comp_df$DataType <- "Lyrebird (噬菌体)"
+
+combined_9comp <- rbind(singlem_9comp_df, lyrebird_9comp_df)
+
+# 可视化：并排比较
+library(ggplot2)
+
+# 为可视化准备数据
+plot_data <- combined_9comp[!is.na(combined_9comp$P_value), ]
+plot_data$Comparison_short <- sapply(strsplit(plot_data$Comparison, " vs "), function(x) {
+  paste0(gsub("Apc", "", x[1]), "\nvs\n", gsub("Apc", "", x[2]))
+})
+
+p_comparison <- ggplot(plot_data, aes(x = reorder(Comparison_short, -P_value), y = -log10(P_value), fill = DataType)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red", linewidth = 0.8) +
+  facet_wrap(~Category, scales = "free_x", ncol = 3,
+             labeller = labeller(Category = c(
+               "Apc_Effect" = "Apc效应 (不同感染状态)",
+               "Infection_MUT" = "感染效应 (ApcMUT背景)",
+               "Infection_WT" = "感染效应 (ApcWT背景)"
+             ))) +
+  scale_fill_manual(values = c("SingleM (细菌)" = "#4DBBD5", "Lyrebird (噬菌体)" = "#E64B35")) +
   labs(
-    title = "Part 5: SingleM vs Lyrebird 成对比较效应量",
-    subtitle = "系统发育层面（细菌）与噬菌体层面的对比",
-    x = "", y = "效应量 R² (%)"
+    title = "SingleM与Lyrebird 9个成对比较结果",
+    subtitle = "红色虚线: P = 0.05",
+    x = "比较对",
+    y = "-log10(P value)",
+    fill = "数据类型"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    axis.text.x = element_text(size = 7, angle = 0),
+    legend.position = "bottom",
+    strip.background = element_rect(fill = "#f0f0f0")
   )
 
-print(p5_viz)
-
-ggsave(here::here("data", params$name, "54_part5_singlem_lyrebird_comparison.png"),
-       plot = p5_viz, width = 12, height = 6, dpi = 300)
+print(p_comparison)
 ```
 
-## 26. CagA效应的G×E交互验证
+## 25. CagA效应：细菌与噬菌体协同分析 {#sec-part5-caga-effect}
 
 ```{r}
-#| label: part5-gxe-verification
-#| message: false
+#| label: part5-caga-effect-analysis
 #| fig-width: 10
 #| fig-height: 5
 
-# ==============================================================================
-# 验证G×E交互：CagA效应在两种遗传背景下的差异
-# ==============================================================================
+# 提取CagA效应比较 (比较6和9)
+caga_comparisons <- combined_9comp[grepl("CagA效应", combined_9comp$Description), ]
 
-# 提取CagA效应比较
-caga_singlem <- part5_singlem_bc |>
-  filter(category == "CagA效应") |>
-  mutate(background = c("ApcMUT", "ApcWT"))
+if (nrow(caga_comparisons) > 0) {
+  cat("### CagA效应在不同Apc背景下的比较\n\n")
 
-caga_lyrebird <- part5_lyrebird_bc |>
-  filter(category == "CagA效应") |>
-  mutate(background = c("ApcMUT", "ApcWT"))
+  knitr::kable(
+    caga_comparisons[, c("DataType", "Comparison", "R2", "F_value", "P_value", "P_adj", "Sig")],
+    caption = "CagA效应比较 (HpWT vs HpKO)"
+  )
 
-cat("=== CagA效应的G×E交互验证 ===\n\n")
+  # 可视化CagA效应
+  p_caga <- ggplot(caga_comparisons, aes(x = DataType, y = R2, fill = gsub(" vs .*", "", Comparison))) +
+    geom_bar(stat = "identity", position = position_dodge(width = 0.7), width = 0.6) +
+    geom_text(aes(label = paste0("P=", round(P_value, 3))),
+              position = position_dodge(width = 0.7), vjust = -0.5, size = 3) +
+    scale_fill_manual(values = c("ApcMUT_HpWT" = "#E64B35", "ApcWT_HpWT" = "#4DBBD5")) +
+    labs(
+      title = "CagA效应：ApcMUT vs ApcWT背景比较",
+      subtitle = "R² 表示CagA感染解释的菌群变异比例",
+      x = "数据类型",
+      y = "R² (方差解释比例)",
+      fill = "Apc背景"
+    ) +
+    theme_bw(base_size = 12) +
+    theme(legend.position = "bottom")
 
-cat("--- SingleM (系统发育) ---\n")
-print(caga_singlem[, c("background", "R2", "p_value", "p_adj", "sig")])
-
-cat("\n--- Lyrebird (噬菌体) ---\n")
-print(caga_lyrebird[, c("background", "R2", "p_value", "p_adj", "sig")])
-
-# 综合判断
-cat("\n=== G×E交互判断 ===\n")
-if (caga_singlem$p_adj[1] < 0.05 && caga_singlem$p_adj[2] > 0.1) {
-  cat("✓ SingleM: G×E交互确认 - CagA效应仅在ApcMUT背景下显著\n")
-} else {
-  cat("△ SingleM: G×E交互模式不明确\n")
+  print(p_caga)
 }
-
-if (caga_lyrebird$p_adj[1] < 0.05 && caga_lyrebird$p_adj[2] > 0.1) {
-  cat("✓ Lyrebird: G×E交互确认 - 噬菌体CagA效应仅在ApcMUT背景下显著\n")
-} else if (all(caga_lyrebird$p_adj > 0.1)) {
-  cat("△ Lyrebird: 噬菌体CagA效应在两种背景下均不显著\n")
-}
-
-# 可视化
-caga_combined <- rbind(
-  caga_singlem |> mutate(data_type = "SingleM"),
-  caga_lyrebird |> mutate(data_type = "Lyrebird")
-)
-
-p5_gxe <- ggplot(caga_combined, aes(x = background, y = R2 * 100, fill = data_type)) +
-  geom_bar(stat = "identity", position = position_dodge(width = 0.8),
-           width = 0.7, alpha = 0.8) +
-  geom_text(aes(label = sig, group = data_type),
-            position = position_dodge(width = 0.8), vjust = -0.5, size = 5) +
-  scale_fill_manual(values = c("SingleM" = "#E64B35", "Lyrebird" = "#00A087")) +
-  theme_bw(base_size = 12) +
-  labs(
-    title = "CagA效应的遗传背景依赖性 (G×E)",
-    subtitle = "比较: HpWT vs HpKO",
-    x = "遗传背景", y = "效应量 R² (%)",
-    fill = "数据类型"
-  ) +
-  ylim(0, max(caga_combined$R2 * 100, na.rm = TRUE) * 1.4)
-
-print(p5_gxe)
-
-ggsave(here::here("data", params$name, "55_part5_gxe_caga_effect.png"),
-       plot = p5_gxe, width = 10, height = 5, dpi = 300)
 ```
 
-## 27. Part 5 结论汇总
+## 26. Part 5 结论汇总 {#sec-part5-summary}
 
 ```{r}
-#| label: part5-conclusions
+#| label: part5-summary-output
+#| echo: false
 #| results: asis
 
-# ==============================================================================
-# Part 5 结论汇总
-# ==============================================================================
+# 统计显著结果
+singlem_sig_nominal <- sum(singlem_9comp_df$P_value < 0.05, na.rm = TRUE)
+singlem_sig_fdr <- sum(singlem_9comp_df$P_adj < 0.05, na.rm = TRUE)
+lyrebird_sig_nominal <- sum(lyrebird_9comp_df$P_value < 0.05, na.rm = TRUE)
+lyrebird_sig_fdr <- sum(lyrebird_9comp_df$P_adj < 0.05, na.rm = TRUE)
 
 cat("
-## Part 5 关键发现
+### 9个成对比较结果汇总
 
-### 27.1 SingleM (系统发育层面)
+| 数据类型 | 名义显著 (P<0.05) | FDR显著 (q<0.05) |
+|----------|-------------------|------------------|
+| SingleM (细菌) | ", singlem_sig_nominal, "/9 | ", singlem_sig_fdr, "/9 |
+| Lyrebird (噬菌体) | ", lyrebird_sig_nominal, "/9 | ", lyrebird_sig_fdr, "/9 |
 
 ")
 
-sig_singlem <- sum(part5_singlem_bc$p_adj < 0.05)
-cat(sprintf("- 9个比较中有 **%d个** 显著 (FDR < 0.05)\n", sig_singlem))
+# 核心发现
+cat("### 核心发现\n\n")
 
-# CagA G×E判断
-if (caga_singlem$p_adj[1] < 0.05 && caga_singlem$p_adj[2] > 0.1) {
-  cat("- **G×E交互确认**: CagA系统发育效应依赖Apc突变背景\n")
+# 检查CagA核心比较 (比较6: ApcMUT中CagA效应)
+core_singlem <- singlem_9comp_df[grepl("ApcMUT: CagA效应", singlem_9comp_df$Description), ]
+core_lyrebird <- lyrebird_9comp_df[grepl("ApcMUT: CagA效应", lyrebird_9comp_df$Description), ]
+
+if (nrow(core_singlem) > 0 && nrow(core_lyrebird) > 0) {
+  cat("**核心比较 (ApcMUT背景下CagA效应):**\n\n")
+  cat("- SingleM (细菌): R² =", core_singlem$R2, ", P =", round(core_singlem$P_value, 4), "\n")
+  cat("- Lyrebird (噬菌体): R² =", core_lyrebird$R2, ", P =", round(core_lyrebird$P_value, 4), "\n\n")
 }
 
-cat("
-### 27.2 Lyrebird (噬菌体层面)
-
-")
-
-sig_lyrebird <- sum(part5_lyrebird_bc$p_adj < 0.05)
-cat(sprintf("- 9个比较中有 **%d个** 显著 (FDR < 0.05)\n", sig_lyrebird))
-
-cat("
-### 27.3 细菌-噬菌体一致性
-
-")
-
-consistency_table <- table(comparison_all$consistency)
-for (pat in names(consistency_table)) {
-  cat(sprintf("- %s: %d个比较\n", pat, consistency_table[pat]))
-}
-
-cat("
-### 27.4 跨分析总结
-
-本Part 5分析与01分析Part 5（物种层面）和02分析Part 10（功能层面）形成完整的证据链：
-
-| 分析层面 | 数据来源 | CagA@ApcMUT | CagA@ApcWT | G×E交互 |
-|----------|----------|-------------|------------|---------|
-| 物种组成 | 01分析Part 5 | - | - | 待整合 |
-| 功能通路 | 02分析Part 10 | - | - | 待整合 |
-| 系统发育 | 03分析Part 5 | ", caga_singlem$sig[1], " | ", caga_singlem$sig[2], " | ", ifelse(caga_singlem$p_adj[1] < 0.05 && caga_singlem$p_adj[2] > 0.1, "✓", "?"), " |
-| 噬菌体   | 03分析Part 5 | ", caga_lyrebird$sig[1], " | ", caga_lyrebird$sig[2], " | ", ifelse(caga_lyrebird$p_adj[1] < 0.05 && caga_lyrebird$p_adj[2] > 0.1, "✓", "?"), " |
-
-")
-```
-
-```{r}
-#| label: part5-save-results
-
-# 保存Part 5汇总结果
-part5_summary <- list(
-  singlem_bc = part5_singlem_bc,
-  singlem_uf = if (exists("part5_singlem_uf")) part5_singlem_uf else NULL,
-  lyrebird_bc = part5_lyrebird_bc,
-  comparison = comparison_all,
-  caga_gxe_singlem = caga_singlem,
-  caga_gxe_lyrebird = caga_lyrebird,
-  timestamp = Sys.time()
+# 保存Part 5结果
+part5_results <- list(
+  singlem_9comparisons = singlem_9comp_df,
+  lyrebird_9comparisons = lyrebird_9comp_df,
+  combined = combined_9comp
 )
 
-saveRDS(part5_summary,
-        file = here::here("data", params$name, "56_part5_summary_results.rds"))
+saveRDS(part5_results,
+        file = here::here("data", params$name, "50_part5_9comparisons.rds"))
 
-cat("\n✅ Part 5 结果已保存:\n")
-cat("  - 50_part5_singlem_bc_pairwise.csv\n")
-cat("  - 51_part5_singlem_unifrac_pairwise.csv (如有)\n")
-cat("  - 52_part5_lyrebird_bc_pairwise.csv\n")
-cat("  - 53_part5_singlem_lyrebird_comparison.csv\n")
-cat("  - 54_part5_singlem_lyrebird_comparison.png\n")
-cat("  - 55_part5_gxe_caga_effect.png\n")
-cat("  - 56_part5_summary_results.rds\n")
+cat("\n**Part 5分析结果已保存至** `data/", params$name, "/50_part5_9comparisons.rds`\n")
+```
+
+::: {.callout-tip}
+## Part 5 分析总结
+
+本部分完成了9个系统性成对PERMANOVA比较，与01和02分析文件的扩展分析保持一致。
+
+**分析框架**:
+- 类别1: 不同感染状态下的Apc突变效应
+- 类别2: ApcMUT背景下的感染效应
+- 类别3: ApcWT背景下的感染效应
+
+**结果解读**:
+- 通过比较细菌(SingleM)和噬菌体(Lyrebird)在同一比较对中的响应，可以评估细菌-噬菌体协同变化模式
+- 核心比较6(ApcMUT: HpWT vs HpKO)直接检验CagA蛋白对微生物组的效应
+:::
+
+```{r}
+#| label: part5-cleanup
+#| include: false
+
+# 清理内存
+gc()
 ```
