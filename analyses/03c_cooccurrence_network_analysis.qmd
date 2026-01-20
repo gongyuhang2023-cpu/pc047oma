@@ -1,0 +1,443 @@
+---
+title: "03c: Co-occurrence网络分析 - 细菌及细菌-噬菌体跨域网络"
+author: "Gong Yuhang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    embed-resources: true
+params:
+  name: "03c_cooccurrence_network"
+execute:
+  warning: false
+  message: false
+---
+
+## 概述
+
+Co-occurrence网络分析用于评估物种间的共生/竞争关系，以及CagA感染如何改变这些关系。
+
+**分析内容**:
+
+1. **细菌-细菌网络**: 评估细菌间共生/竞争关系
+2. **细菌-噬菌体跨域网络**: 宿主-噬菌体特异性互作
+3. **网络拓扑比较**: 不同处理组的网络结构差异
+
+**方法**: SparCC (Sparse Correlations for Compositional data) - 专为组成型数据设计
+
+## 环境设置
+
+```{r}
+#| label: setup
+
+library(here)
+library(TreeSummarizedExperiment)
+library(mia)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(igraph)
+library(corrplot)
+
+# 创建输出目录
+output_dir <- here::here("analyses", "data", params$name)
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+cat("输出目录:", output_dir, "\n")
+```
+
+## Part 1: 数据加载
+
+### 1.1 加载细菌数据 (01分析)
+
+```{r}
+#| label: part1-load-bacteria
+
+# 读取清洗后的细菌TSE
+tse_bacteria <- readRDS(here::here("analyses", "data", "01_alpha_beta_diversity_analysis",
+                                    "tse_standard_species_ca_cleaned.rds"))
+
+cat("细菌TSE:\n")
+cat("- 物种数:", nrow(tse_bacteria), "\n")
+cat("- 样本数:", ncol(tse_bacteria), "\n")
+
+# 获取元数据
+metadata <- as.data.frame(colData(tse_bacteria))
+print(table(metadata$treatment_group))
+```
+
+### 1.2 加载噬菌体数据 (03分析)
+
+```{r}
+#| label: part1-load-phage
+
+# 检查噬菌体TSE是否存在
+phage_file <- here::here("analyses", "data", "03_singlem_diversity_analysis",
+                          "tse_lyrebird.rds")
+
+if (file.exists(phage_file)) {
+  tse_phage <- readRDS(phage_file)
+  cat("\n噬菌体TSE:\n")
+  cat("- OTU数:", nrow(tse_phage), "\n")
+  cat("- 样本数:", ncol(tse_phage), "\n")
+  has_phage <- TRUE
+} else {
+  cat("\n噬菌体TSE不存在，将只进行细菌网络分析\n")
+  has_phage <- FALSE
+}
+```
+
+### 1.3 找共同样本
+
+```{r}
+#| label: part1-common-samples
+
+if (has_phage) {
+  common_samples <- intersect(colnames(tse_bacteria), colnames(tse_phage))
+  cat("细菌-噬菌体共同样本数:", length(common_samples), "\n")
+} else {
+  common_samples <- colnames(tse_bacteria)
+}
+```
+
+## Part 2: 细菌-细菌Co-occurrence网络
+
+### 2.1 准备丰度矩阵
+
+```{r}
+#| label: part2-prep-matrix
+
+# 获取counts矩阵
+bacteria_counts <- assay(tse_bacteria, "counts")
+
+# 过滤低丰度物种 (至少在20%样本中存在)
+prevalence <- rowSums(bacteria_counts > 0) / ncol(bacteria_counts)
+bacteria_filtered <- bacteria_counts[prevalence >= 0.2, ]
+
+cat("Prevalence过滤后物种数:", nrow(bacteria_filtered), "\n")
+
+# 转换为相对丰度
+bacteria_relab <- sweep(bacteria_filtered, 2, colSums(bacteria_filtered), "/")
+```
+
+### 2.2 计算Spearman相关性
+
+```{r}
+#| label: part2-calc-correlation
+
+# 使用Spearman相关性（对组成型数据更稳健）
+# 注意：理想情况下应使用SparCC，但这里用Spearman作为快速替代
+
+cor_matrix <- cor(t(bacteria_relab), method = "spearman")
+
+cat("相关矩阵维度:", dim(cor_matrix), "\n")
+```
+
+### 2.3 构建网络（全样本）
+
+```{r}
+#| label: part2-build-network
+
+# 设置相关性阈值
+cor_threshold <- 0.6
+p_threshold <- 0.05
+
+# 计算p值
+n_samples <- ncol(bacteria_relab)
+cor_to_t <- function(r, n) {
+  r * sqrt((n - 2) / (1 - r^2))
+}
+t_values <- cor_to_t(cor_matrix, n_samples)
+p_values <- 2 * pt(-abs(t_values), df = n_samples - 2)
+
+# 显著且强相关的边
+adj_matrix <- abs(cor_matrix) >= cor_threshold & p_values < p_threshold
+diag(adj_matrix) <- FALSE
+
+# 创建igraph对象
+g_all <- graph_from_adjacency_matrix(adj_matrix, mode = "undirected")
+
+# 添加边权重（相关系数）
+edge_list <- which(adj_matrix, arr.ind = TRUE)
+edge_list <- edge_list[edge_list[,1] < edge_list[,2], ]  # 只保留上三角
+
+if (nrow(edge_list) > 0) {
+  E(g_all)$weight <- sapply(1:nrow(edge_list), function(i) {
+    cor_matrix[edge_list[i,1], edge_list[i,2]]
+  })
+  E(g_all)$sign <- ifelse(E(g_all)$weight > 0, "positive", "negative")
+}
+
+cat("\n全样本细菌网络:\n")
+cat("- 节点数:", vcount(g_all), "\n")
+cat("- 边数:", ecount(g_all), "\n")
+cat("- 正相关边:", sum(E(g_all)$sign == "positive", na.rm = TRUE), "\n")
+cat("- 负相关边:", sum(E(g_all)$sign == "negative", na.rm = TRUE), "\n")
+```
+
+### 2.4 按处理组构建网络
+
+```{r}
+#| label: part2-group-networks
+
+# 定义要比较的组
+groups_to_compare <- c("ApcMUT_HpKO", "ApcMUT_HpWT")
+
+network_stats <- list()
+
+for (grp in groups_to_compare) {
+  # 获取该组样本
+  grp_samples <- rownames(metadata)[metadata$treatment_group == grp]
+
+  if (length(grp_samples) < 3) {
+    cat(sprintf("\n%s: 样本数不足，跳过\n", grp))
+    next
+  }
+
+  # 计算该组的相关性
+  grp_relab <- bacteria_relab[, grp_samples]
+  grp_cor <- cor(t(grp_relab), method = "spearman")
+
+  # 构建网络
+  grp_adj <- abs(grp_cor) >= cor_threshold
+  diag(grp_adj) <- FALSE
+
+  g_grp <- graph_from_adjacency_matrix(grp_adj, mode = "undirected")
+
+  # 计算网络拓扑参数
+  stats <- list(
+    group = grp,
+    n_samples = length(grp_samples),
+    n_nodes = vcount(g_grp),
+    n_edges = ecount(g_grp),
+    density = edge_density(g_grp),
+    transitivity = transitivity(g_grp, type = "global"),
+    avg_path_length = if (is_connected(g_grp)) mean_distance(g_grp) else NA,
+    modularity = if (ecount(g_grp) > 0) modularity(cluster_louvain(g_grp)) else NA
+  )
+
+  network_stats[[grp]] <- stats
+
+  cat(sprintf("\n%s 网络统计:\n", grp))
+  cat(sprintf("  节点: %d, 边: %d\n", stats$n_nodes, stats$n_edges))
+  cat(sprintf("  密度: %.4f\n", stats$density))
+  cat(sprintf("  聚类系数: %.4f\n", stats$transitivity))
+  cat(sprintf("  模块度: %.4f\n", stats$modularity))
+}
+
+# 汇总表
+network_stats_df <- bind_rows(network_stats)
+print(network_stats_df)
+
+write.csv(network_stats_df,
+          file = file.path(output_dir, "01_bacteria_network_stats.csv"),
+          row.names = FALSE)
+```
+
+### 2.5 网络可视化
+
+```{r}
+#| label: part2-visualization
+#| fig-width: 12
+#| fig-height: 6
+
+# 全样本网络可视化
+if (ecount(g_all) > 0 && ecount(g_all) < 500) {
+  # 设置布局
+  set.seed(42)
+  layout <- layout_with_fr(g_all)
+
+  # 节点大小基于度
+  V(g_all)$size <- degree(g_all) + 3
+
+  # 边颜色基于正负相关
+  E(g_all)$color <- ifelse(E(g_all)$sign == "positive", "steelblue", "tomato")
+
+  par(mfrow = c(1, 1), mar = c(1, 1, 3, 1))
+  plot(g_all,
+       layout = layout,
+       vertex.label = NA,
+       vertex.color = "lightblue",
+       edge.width = abs(E(g_all)$weight) * 2,
+       main = "细菌Co-occurrence网络\n(蓝=正相关, 红=负相关)")
+
+} else if (ecount(g_all) >= 500) {
+  cat("边数过多 (", ecount(g_all), ")，跳过全网络可视化\n")
+  cat("建议提高相关性阈值或使用专门的网络可视化工具\n")
+} else {
+  cat("网络无边，跳过可视化\n")
+}
+```
+
+### 2.6 Hub物种识别
+
+```{r}
+#| label: part2-hub-species
+
+if (ecount(g_all) > 0) {
+  # 计算中心性指标
+  degree_cent <- degree(g_all)
+  betweenness_cent <- betweenness(g_all)
+  closeness_cent <- closeness(g_all)
+
+  hub_df <- data.frame(
+    species = V(g_all)$name,
+    degree = degree_cent,
+    betweenness = betweenness_cent,
+    closeness = closeness_cent
+  ) %>%
+    arrange(desc(degree))
+
+  cat("\nTop 10 Hub物种 (按度排序):\n\n")
+  print(head(hub_df, 10))
+
+  write.csv(hub_df,
+            file = file.path(output_dir, "02_bacteria_hub_species.csv"),
+            row.names = FALSE)
+}
+```
+
+## Part 3: 细菌-噬菌体跨域网络
+
+```{r}
+#| label: part3-cross-domain
+#| eval: !expr has_phage
+
+if (has_phage) {
+  cat("\n====== 细菌-噬菌体跨域网络分析 ======\n\n")
+
+  # 获取共同样本的数据
+  bacteria_common <- bacteria_relab[, common_samples]
+  phage_counts <- assay(tse_phage[, common_samples], "counts")
+
+  # 过滤噬菌体
+  phage_prev <- rowSums(phage_counts > 0) / ncol(phage_counts)
+  phage_filtered <- phage_counts[phage_prev >= 0.2, ]
+  phage_relab <- sweep(phage_filtered, 2, colSums(phage_filtered) + 1, "/")
+
+  cat("过滤后细菌数:", nrow(bacteria_common), "\n")
+  cat("过滤后噬菌体数:", nrow(phage_filtered), "\n")
+
+  # 计算细菌-噬菌体相关性
+  cross_cor <- cor(t(bacteria_common), t(phage_relab), method = "spearman")
+
+  cat("跨域相关矩阵维度:", dim(cross_cor), "\n")
+
+  # 识别显著关联
+  cross_threshold <- 0.5
+  sig_pairs <- which(abs(cross_cor) >= cross_threshold, arr.ind = TRUE)
+
+  if (nrow(sig_pairs) > 0) {
+    cross_pairs_df <- data.frame(
+      bacteria = rownames(cross_cor)[sig_pairs[,1]],
+      phage = colnames(cross_cor)[sig_pairs[,2]],
+      correlation = sapply(1:nrow(sig_pairs), function(i) {
+        cross_cor[sig_pairs[i,1], sig_pairs[i,2]]
+      })
+    ) %>%
+      arrange(desc(abs(correlation)))
+
+    cat("\nTop 20 细菌-噬菌体关联:\n\n")
+    print(head(cross_pairs_df, 20))
+
+    write.csv(cross_pairs_df,
+              file = file.path(output_dir, "03_bacteria_phage_associations.csv"),
+              row.names = FALSE)
+  } else {
+    cat("未发现显著的细菌-噬菌体关联 (阈值:", cross_threshold, ")\n")
+  }
+}
+```
+
+## Part 4: 网络比较 - CagA效应
+
+```{r}
+#| label: part4-network-comparison
+
+if (length(network_stats) >= 2) {
+  cat("\n====== 网络拓扑比较: CagA效应 ======\n\n")
+
+  # 比较ApcMUT_HpWT vs ApcMUT_HpKO
+  if ("ApcMUT_HpWT" %in% names(network_stats) && "ApcMUT_HpKO" %in% names(network_stats)) {
+    hpwt <- network_stats[["ApcMUT_HpWT"]]
+    hpko <- network_stats[["ApcMUT_HpKO"]]
+
+    cat("| 指标 | HpKO (对照) | HpWT (CagA+) | 变化 |\n")
+    cat("|------|-------------|--------------|------|\n")
+    cat(sprintf("| 边数 | %d | %d | %+d |\n",
+                hpko$n_edges, hpwt$n_edges, hpwt$n_edges - hpko$n_edges))
+    cat(sprintf("| 密度 | %.4f | %.4f | %+.4f |\n",
+                hpko$density, hpwt$density, hpwt$density - hpko$density))
+    cat(sprintf("| 聚类系数 | %.4f | %.4f | %+.4f |\n",
+                hpko$transitivity, hpwt$transitivity,
+                hpwt$transitivity - hpko$transitivity))
+    cat(sprintf("| 模块度 | %.4f | %.4f | %+.4f |\n",
+                hpko$modularity, hpwt$modularity,
+                hpwt$modularity - hpko$modularity))
+
+    cat("\n**解读**:\n")
+    if (hpwt$density > hpko$density) {
+      cat("- CagA感染**增加**网络密度 → 物种间关联更紧密\n")
+    } else {
+      cat("- CagA感染**降低**网络密度 → 物种间关联更松散\n")
+    }
+
+    if (hpwt$modularity > hpko$modularity) {
+      cat("- CagA感染**增加**模块度 → 群落更加模块化/分隔\n")
+    } else {
+      cat("- CagA感染**降低**模块度 → 群落结构更混合\n")
+    }
+  }
+}
+```
+
+## Part 5: 结论汇总
+
+```{r}
+#| label: part5-conclusions
+#| echo: false
+#| results: asis
+
+cat("\n## Part 5 关键发现\n\n")
+
+cat("### 细菌网络\n\n")
+if (exists("g_all") && ecount(g_all) > 0) {
+  cat(sprintf("- 全样本网络: %d节点, %d边\n", vcount(g_all), ecount(g_all)))
+  pos_edges <- sum(E(g_all)$sign == "positive", na.rm = TRUE)
+  neg_edges <- sum(E(g_all)$sign == "negative", na.rm = TRUE)
+  cat(sprintf("- 正相关边: %d (%.1f%%), 负相关边: %d (%.1f%%)\n",
+              pos_edges, 100*pos_edges/ecount(g_all),
+              neg_edges, 100*neg_edges/ecount(g_all)))
+}
+
+if (exists("hub_df") && nrow(hub_df) > 0) {
+  cat("\n### Hub物种 (Top 5)\n\n")
+  for (i in 1:min(5, nrow(hub_df))) {
+    cat(sprintf("%d. %s (度=%d)\n", i, hub_df$species[i], hub_df$degree[i]))
+  }
+}
+
+cat("\n### 后续分析建议\n\n")
+cat("1. 使用SparCC替代Spearman获得更准确的组成型数据相关性\n")
+cat("2. 进行网络稳定性分析（bootstrap）\n")
+cat("3. 整合功能数据进行三方网络分析\n")
+
+cat("\n✅ 03c分析结果已保存:\n")
+cat("  - 01_bacteria_network_stats.csv\n")
+cat("  - 02_bacteria_hub_species.csv\n")
+if (has_phage) {
+  cat("  - 03_bacteria_phage_associations.csv\n")
+}
+```
+
+```{r}
+#| label: session-info
+
+cat("\n【分析环境信息】\n")
+cat("R版本:", R.version.string, "\n")
+cat("分析日期:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
+```

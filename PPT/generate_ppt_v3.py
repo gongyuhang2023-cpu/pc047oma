@@ -1,6 +1,7 @@
 """
-PC047组会PPT生成脚本 v3
-新增：9个成对比较验证、Standard vs Virus对比、物种-功能一致性
+PC047组会PPT生成脚本 v4
+核心叙述：CagA感染如何重塑肠道微生物组
+调整：G×E作为模型验证而非主要发现
 """
 
 from pptx import Presentation
@@ -1084,25 +1085,25 @@ def generate_chinese_ppt(output_path, image_dir):
     # 5. 分析流程图
     add_analysis_pipeline_slide(prs, 'cn')
 
-    # 6. 结果1：G×E交互验证
+    # 6. 结果1：CagA显著重塑肠道菌群
     caga_effect_path = os.path.join(image_dir, "01_alpha_beta_diversity_analysis", "52_part5_caga_effect_by_genotype.png")
     add_content_slide(
         prs,
-        "结果1：G×E交互作用验证",
+        "结果1：CagA显著重塑肠道菌群",
         [
-            "• 9个系统性成对比较",
-            "• CagA@ApcMUT: **P=0.039**, R²=33.6%",
-            "• CagA@ApcWT: P=0.387, 效应消失",
-            "• G×E交互**完全验证**",
-            "• 意外发现：感染**放大**Apc效应"
+            "• Beta多样性：**P=0.012**, R²=33.6%",
+            "• Alpha多样性：P=0.73 (无变化)",
+            "• → **选择性重组**，非全面破坏",
+            "• 29个物种显著关联",
+            "• 模型验证：Apc突变背景放大CagA效应"
         ],
-        notes="""首先展示G×E交互作用的验证结果。
+        notes="""首先展示CagA对肠道菌群的核心效应。
 
-我们进行了9个系统性成对比较，全面评估不同因素的效应。
+核心发现：CagA显著改变菌群结构（Beta多样性P=0.012），但不改变整体多样性（Alpha P=0.73）。这说明CagA是选择性调控特定菌群，而非全面破坏。
 
-核心发现：CagA效应在ApcMUT背景下显著（P=0.039，解释33.6%变异），而在ApcWT背景下效应消失（P=0.387）。这完全验证了G×E交互作用假说。
+29个物种与CagA感染显著关联。
 
-一个意外发现是：感染不是"抹平"而是"放大"了Apc效应。未感染时Apc效应不显著，感染后Apc效应变得显著。""",
+模型验证方面：在Apc突变背景下CagA效应更显著（P=0.039 vs P=0.387），说明我们选用的肿瘤易感模型是有效的。""",
         image_path=caga_effect_path if os.path.exists(caga_effect_path) else None
     )
 
@@ -1163,23 +1164,23 @@ def generate_chinese_ppt(output_path, image_dir):
         prs,
         "核心结论与后续计划",
         [
-            (1, "G×E交互作用：CagA效应依赖Apc突变背景 (9个比较完全验证)"),
-            (2, "CagA靶点：主要影响细菌 (5/9显著) 而非病毒 (0/9显著)"),
-            (3, "功能冗余与静默更替：整体冗余但Driver从益生菌→致病菌"),
-            (4, "噬菌体协同：CagA→细菌→噬菌体级联效应 (P=0.001)"),
-            (5, "后续：代谢组学验证 + 整合肿瘤/T细胞表型数据"),
+            (1, "CagA显著重塑肠道菌群：Beta多样性P=0.012, 选择性调控"),
+            (2, "细菌与噬菌体同步改变：噬菌体多样性↓, 高度协同(P=0.001)"),
+            (3, "功能执行者静默更替：Driver从益生菌→致病菌，改变免疫刺激谱"),
+            (4, "模型验证：Apc突变背景有效放大CagA效应 (G×E P=0.024)"),
+            (5, "后续：Gene Families分析 + 代谢组学验证"),
         ],
         notes="""最后总结核心结论。
 
-第一，G×E交互作用通过9个系统性成对比较完全验证。
+第一，CagA显著重塑肠道菌群结构，通过选择性调控而非全面破坏。
 
-第二，明确了CagA的作用靶点：主要影响细菌而非病毒。
+第二，细菌与噬菌体同步改变，两者高度协同（Mantel P=0.001）。
 
-第三，功能冗余与静默更替：整体功能稳定，但执行者已从益生菌转向致病菌。
+第三，功能执行者发生静默更替，从益生菌转向潜在致病菌，可能改变免疫刺激来源。
 
-第四，细菌-噬菌体高度协同，CagA通过级联效应影响整个微生物组。
+第四，实验模型验证：Apc突变背景有效放大了CagA效应。
 
-后续计划：代谢组学验证和整合肿瘤/T细胞表型数据。
+后续计划：Gene Families分析以获得更精细的功能差异，以及代谢组学验证。
 
 感谢大家聆听！"""
     )
@@ -1224,25 +1225,25 @@ def generate_english_ppt(output_path, image_dir):
     # 5. Pipeline
     add_analysis_pipeline_slide(prs, 'en')
 
-    # 6. Result 1: G×E
+    # 6. Result 1: CagA Restructures Microbiota
     caga_effect_path = os.path.join(image_dir, "01_alpha_beta_diversity_analysis", "52_part5_caga_effect_by_genotype.png")
     add_content_slide(
         prs,
-        "Result 1: G×E Interaction Verification",
+        "Result 1: CagA Restructures Gut Microbiota",
         [
-            "• 9 systematic pairwise comparisons",
-            "• CagA@ApcMUT: **P=0.039**, R²=33.6%",
-            "• CagA@ApcWT: P=0.387, effect absent",
-            "• G×E interaction **fully verified**",
-            "• Unexpected: Infection **amplifies** Apc effect"
+            "• Beta diversity: **P=0.012**, R²=33.6%",
+            "• Alpha diversity: P=0.73 (no change)",
+            "• → **Selective restructuring**, not destruction",
+            "• 29 species significantly associated",
+            "• Model validation: Apc-mutant amplifies CagA effect"
         ],
-        notes="""First, the G×E interaction verification results.
+        notes="""First, the core CagA effect on gut microbiota.
 
-We performed 9 systematic pairwise comparisons to comprehensively evaluate different factor effects.
+Core finding: CagA significantly alters community structure (Beta diversity P=0.012), but does not change overall diversity (Alpha P=0.73). This indicates CagA selectively regulates specific bacteria, not wholesale destruction.
 
-Core finding: CagA effect is significant in ApcMUT background (P=0.039, explaining 33.6% variance), but absent in ApcWT background (P=0.387). This fully verifies the G×E interaction hypothesis.
+29 species are significantly associated with CagA infection.
 
-An unexpected finding: infection amplifies rather than masks the Apc effect. Apc effect was not significant before infection, but became significant after infection.""",
+Model validation: CagA effect is more significant in Apc-mutant background (P=0.039 vs P=0.387), confirming our tumor-susceptible model is effective.""",
         image_path=caga_effect_path if os.path.exists(caga_effect_path) else None
     )
 
@@ -1303,23 +1304,23 @@ This shows CagA's effect cascades: CagA changes bacteria, bacteria change phage.
         prs,
         "Conclusions & Future Directions",
         [
-            (1, "G×E interaction: CagA effect requires Apc-mutant background (9 comparisons verified)"),
-            (2, "CagA target: Mainly bacteria (5/9 sig.) not viruses (0/9 sig.)"),
-            (3, "Functional redundancy & Silent Shift: Overall redundant but Drivers shifted"),
-            (4, "Phage coordination: CagA→Bacteria→Phage cascade (P=0.001)"),
-            (5, "Next: Metabolomics validation + Tumor/T-cell phenotype integration"),
+            (1, "CagA restructures gut microbiota: Beta P=0.012, selective regulation"),
+            (2, "Bacteria-phage synchronization: Phage diversity↓, highly coordinated (P=0.001)"),
+            (3, "Silent Driver shift: Probiotics→Pathobionts, altering immune stimulation"),
+            (4, "Model validation: Apc-mutant amplifies CagA effect (G×E P=0.024)"),
+            (5, "Next: Gene Families analysis + Metabolomics validation"),
         ],
         notes="""Finally, core conclusions.
 
-First, G×E interaction fully verified through 9 systematic comparisons.
+First, CagA significantly restructures gut microbiota through selective regulation, not destruction.
 
-Second, clarified CagA target: mainly bacteria, not viruses.
+Second, bacteria and phage change synchronously, highly coordinated (Mantel P=0.001).
 
-Third, functional redundancy and Silent Shift: overall function stable, but drivers shifted from probiotics to pathobionts.
+Third, functional Drivers silently shift from probiotics to pathobionts, potentially altering immune stimulation sources.
 
-Fourth, bacteria-phage highly coordinated, CagA influences entire microbiome through cascade effect.
+Fourth, model validation: Apc-mutant background effectively amplifies CagA effect.
 
-Next steps: metabolomics validation and integration with tumor/T-cell phenotype data.
+Next steps: Gene Families analysis for finer functional resolution, and metabolomics validation.
 
 Thank you for your attention!"""
     )
@@ -1343,7 +1344,7 @@ if __name__ == "__main__":
 
     # 汇报日期和版本号
     meeting_date = "20260126"
-    version = "v3"
+    version = "v4"
 
     # 创建日期文件夹
     output_dir = os.path.join(base_dir, "PPT", meeting_date)

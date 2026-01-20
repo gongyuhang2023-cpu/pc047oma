@@ -1,0 +1,427 @@
+---
+title: "02b: 扩展功能分析 - Gene Families / GO / PFAM"
+author: "Gong Yuhang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    embed-resources: true
+params:
+  name: "02b_extended_functional"
+execute:
+  warning: false
+  message: false
+---
+
+## 概述
+
+本文件是02_functional_profiling的扩展分析，针对HUMAnN4输出的其他功能注释数据进行差异分析：
+
+| 数据类型 | 特征数 | 说明 |
+|----------|--------|------|
+| Gene Families | ~430万 | 原始UniRef90基因家族（需过滤） |
+| GO | ~13,000 | Gene Ontology功能分类 |
+| PFAM | ~7,600 | 蛋白质结构域 |
+
+**目的**: 在Pathway/KO层面未发现显著差异的情况下，尝试更精细的功能分辨率。
+
+## 环境设置
+
+```{r}
+#| label: setup
+
+library(here)
+library(TreeSummarizedExperiment)
+library(mia)
+library(dplyr)
+library(ggplot2)
+library(Maaslin2)
+
+# 创建输出目录
+output_dir <- here::here("analyses", "data", params$name)
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+# 数据目录
+humann_dir <- here::here("analyses", "data", "00-raw", "d02_functional_profiling", "humann4")
+
+cat("数据目录:", humann_dir, "\n")
+cat("输出目录:", output_dir, "\n")
+```
+
+## Part 1: GO (Gene Ontology) 差异分析
+
+GO分类提供更直观的功能分类（分子功能、生物过程、细胞组分）。
+
+### 1.1 读取GO数据
+
+```{r}
+#| label: part1-load-go
+
+# 读取GO unstratified数据
+go_file <- file.path(humann_dir, "humann4_genefamilies-step3-GO_unstratified.tsv")
+
+if (file.exists(go_file)) {
+  go_raw <- read.delim(go_file, header = TRUE, row.names = 1, check.names = FALSE)
+  cat("GO数据维度:", nrow(go_raw), "特征 ×", ncol(go_raw), "样本\n")
+
+  # 移除UNMAPPED和UNGROUPED
+  go_raw <- go_raw[!grepl("UNMAPPED|UNGROUPED", rownames(go_raw)), ]
+  cat("过滤后:", nrow(go_raw), "GO terms\n")
+} else {
+  stop("GO数据文件不存在!")
+}
+```
+
+### 1.2 读取样本元数据
+
+```{r}
+#| label: part1-load-metadata
+
+# 从01分析读取清洗后的TSE获取元数据
+tse_ref <- readRDS(here::here("analyses", "data", "01_alpha_beta_diversity_analysis",
+                               "tse_standard_species_ca_cleaned.rds"))
+
+metadata <- as.data.frame(colData(tse_ref))
+cat("元数据样本数:", nrow(metadata), "\n")
+
+# 匹配样本
+common_samples <- intersect(colnames(go_raw), rownames(metadata))
+cat("共同样本数:", length(common_samples), "\n")
+
+# 过滤
+go_filtered <- go_raw[, common_samples]
+metadata_filtered <- metadata[common_samples, ]
+```
+
+### 1.3 Prevalence过滤
+
+```{r}
+#| label: part1-prevalence-filter
+
+# 计算prevalence (在多少比例的样本中存在)
+prevalence <- rowSums(go_filtered > 0) / ncol(go_filtered)
+
+# 过滤条件: 至少在10%样本中存在
+prev_threshold <- 0.10
+go_prevalent <- go_filtered[prevalence >= prev_threshold, ]
+
+cat(sprintf("Prevalence过滤 (>=%d%%样本): %d → %d GO terms\n",
+            prev_threshold * 100, nrow(go_filtered), nrow(go_prevalent)))
+```
+
+### 1.4 MaAsLin2差异分析
+
+```{r}
+#| label: part1-maaslin2
+#| results: hide
+
+# 准备MaAsLin2输入
+go_for_maaslin <- as.data.frame(t(go_prevalent))
+metadata_for_maaslin <- metadata_filtered[, c("treatment_group"), drop = FALSE]
+
+# 核心比较: 只保留ApcMUT样本
+core_samples <- rownames(metadata_for_maaslin)[
+  metadata_for_maaslin$treatment_group %in% c("ApcMUT_HpWT", "ApcMUT_HpKO")
+]
+
+go_core <- go_for_maaslin[core_samples, ]
+metadata_core <- metadata_for_maaslin[core_samples, , drop = FALSE]
+
+# 运行MaAsLin2
+maaslin_go_dir <- file.path(output_dir, "maaslin2_go_results")
+
+fit_go <- Maaslin2(
+  input_data = go_core,
+  input_metadata = metadata_core,
+  output = maaslin_go_dir,
+  fixed_effects = c("treatment_group"),
+  reference = "treatment_group,ApcMUT_HpKO",
+  normalization = "TSS",
+  transform = "LOG",
+  analysis_method = "LM",
+  max_significance = 0.25,
+  min_abundance = 0.0001,
+  min_prevalence = 0.1,
+  cores = 1,
+  plot_heatmap = FALSE,
+  plot_scatter = FALSE
+)
+```
+
+### 1.5 GO差异结果
+
+```{r}
+#| label: part1-go-results
+
+go_results <- fit_go$results %>%
+  filter(metadata == "treatment_group") %>%
+  arrange(pval)
+
+cat("\nGO差异分析结果:\n")
+cat("----------------\n")
+cat(sprintf("总检测GO terms: %d\n", nrow(go_results)))
+cat(sprintf("P < 0.05: %d\n", sum(go_results$pval < 0.05)))
+cat(sprintf("FDR < 0.25: %d\n", sum(go_results$qval < 0.25)))
+cat(sprintf("FDR < 0.05: %d\n", sum(go_results$qval < 0.05)))
+
+# 显示Top结果
+if (nrow(go_results) > 0) {
+  cat("\nTop 20 GO terms (by P-value):\n\n")
+  print(head(go_results[, c("feature", "coef", "pval", "qval")], 20))
+}
+
+# 保存结果
+write.csv(go_results,
+          file = file.path(output_dir, "01_go_daa_results.csv"),
+          row.names = FALSE)
+```
+
+## Part 2: PFAM (蛋白质结构域) 差异分析
+
+PFAM提供蛋白质结构域层面的功能信息。
+
+### 2.1 读取PFAM数据
+
+```{r}
+#| label: part2-load-pfam
+
+pfam_file <- file.path(humann_dir, "humann4_genefamilies-step3-PFAM_unstratified.tsv")
+
+if (file.exists(pfam_file)) {
+  pfam_raw <- read.delim(pfam_file, header = TRUE, row.names = 1, check.names = FALSE)
+  cat("PFAM数据维度:", nrow(pfam_raw), "特征 ×", ncol(pfam_raw), "样本\n")
+
+  # 移除UNMAPPED和UNGROUPED
+  pfam_raw <- pfam_raw[!grepl("UNMAPPED|UNGROUPED", rownames(pfam_raw)), ]
+  cat("过滤后:", nrow(pfam_raw), "PFAM domains\n")
+}
+```
+
+### 2.2 PFAM MaAsLin2分析
+
+```{r}
+#| label: part2-pfam-maaslin
+#| results: hide
+
+# 过滤样本
+pfam_filtered <- pfam_raw[, common_samples]
+
+# Prevalence过滤
+prevalence_pfam <- rowSums(pfam_filtered > 0) / ncol(pfam_filtered)
+pfam_prevalent <- pfam_filtered[prevalence_pfam >= prev_threshold, ]
+
+cat(sprintf("PFAM Prevalence过滤: %d → %d domains\n",
+            nrow(pfam_filtered), nrow(pfam_prevalent)))
+
+# 准备MaAsLin2
+pfam_for_maaslin <- as.data.frame(t(pfam_prevalent))
+pfam_core <- pfam_for_maaslin[core_samples, ]
+
+# 运行MaAsLin2
+maaslin_pfam_dir <- file.path(output_dir, "maaslin2_pfam_results")
+
+fit_pfam <- Maaslin2(
+  input_data = pfam_core,
+  input_metadata = metadata_core,
+  output = maaslin_pfam_dir,
+  fixed_effects = c("treatment_group"),
+  reference = "treatment_group,ApcMUT_HpKO",
+  normalization = "TSS",
+  transform = "LOG",
+  analysis_method = "LM",
+  max_significance = 0.25,
+  min_abundance = 0.0001,
+  min_prevalence = 0.1,
+  cores = 1,
+  plot_heatmap = FALSE,
+  plot_scatter = FALSE
+)
+```
+
+### 2.3 PFAM差异结果
+
+```{r}
+#| label: part2-pfam-results
+
+pfam_results <- fit_pfam$results %>%
+  filter(metadata == "treatment_group") %>%
+  arrange(pval)
+
+cat("\nPFAM差异分析结果:\n")
+cat("------------------\n")
+cat(sprintf("总检测PFAM domains: %d\n", nrow(pfam_results)))
+cat(sprintf("P < 0.05: %d\n", sum(pfam_results$pval < 0.05)))
+cat(sprintf("FDR < 0.25: %d\n", sum(pfam_results$qval < 0.25)))
+cat(sprintf("FDR < 0.05: %d\n", sum(pfam_results$qval < 0.05)))
+
+if (nrow(pfam_results) > 0) {
+  cat("\nTop 20 PFAM domains (by P-value):\n\n")
+  print(head(pfam_results[, c("feature", "coef", "pval", "qval")], 20))
+}
+
+write.csv(pfam_results,
+          file = file.path(output_dir, "02_pfam_daa_results.csv"),
+          row.names = FALSE)
+```
+
+## Part 3: Gene Families 差异分析（过滤后）
+
+Gene Families是最精细的功能层级，但数据量巨大需要严格过滤。
+
+### 3.1 读取Gene Families数据
+
+```{r}
+#| label: part3-load-genefamilies
+
+gf_file <- file.path(humann_dir, "humann4_genefamilies-step2-normalized.tsv")
+
+if (file.exists(gf_file)) {
+  # 只读取前100行看结构
+  gf_preview <- read.delim(gf_file, header = TRUE, nrows = 100, check.names = FALSE)
+  cat("Gene Families预览:\n")
+  cat("列数:", ncol(gf_preview), "\n")
+  cat("前几行特征名:\n")
+  print(head(rownames(gf_preview)))
+
+  # 完整读取（可能很慢）
+  cat("\n正在读取完整Gene Families数据（可能需要几分钟）...\n")
+  gf_raw <- read.delim(gf_file, header = TRUE, row.names = 1, check.names = FALSE)
+  cat("Gene Families原始维度:", nrow(gf_raw), "×", ncol(gf_raw), "\n")
+}
+```
+
+### 3.2 严格过滤
+
+```{r}
+#| label: part3-strict-filter
+
+# 移除stratified条目（只保留unstratified）
+unstratified_idx <- !grepl("\\|", rownames(gf_raw))
+gf_unstrat <- gf_raw[unstratified_idx, ]
+cat("移除stratified后:", nrow(gf_unstrat), "gene families\n")
+
+# 移除UNMAPPED
+gf_unstrat <- gf_unstrat[!grepl("UNMAPPED", rownames(gf_unstrat)), ]
+cat("移除UNMAPPED后:", nrow(gf_unstrat), "\n")
+
+# 过滤样本
+gf_filtered <- gf_unstrat[, common_samples]
+
+# 严格Prevalence过滤: 至少在20%样本中存在
+prev_strict <- 0.20
+prevalence_gf <- rowSums(gf_filtered > 0) / ncol(gf_filtered)
+gf_prevalent <- gf_filtered[prevalence_gf >= prev_strict, ]
+
+cat(sprintf("严格Prevalence过滤 (>=%d%%): %d → %d gene families\n",
+            prev_strict * 100, nrow(gf_filtered), nrow(gf_prevalent)))
+
+# 进一步过滤: 最小丰度
+min_abundance <- 1  # CPM
+mean_abundance <- rowMeans(gf_prevalent)
+gf_final <- gf_prevalent[mean_abundance >= min_abundance, ]
+
+cat(sprintf("最小丰度过滤 (>=%.1f CPM): %d gene families\n",
+            min_abundance, nrow(gf_final)))
+```
+
+### 3.3 Gene Families MaAsLin2分析
+
+```{r}
+#| label: part3-gf-maaslin
+#| results: hide
+
+if (nrow(gf_final) > 0 && nrow(gf_final) < 50000) {
+  # 准备MaAsLin2
+  gf_for_maaslin <- as.data.frame(t(gf_final))
+  gf_core <- gf_for_maaslin[core_samples, ]
+
+  # 运行MaAsLin2
+  maaslin_gf_dir <- file.path(output_dir, "maaslin2_genefamilies_results")
+
+  fit_gf <- Maaslin2(
+    input_data = gf_core,
+    input_metadata = metadata_core,
+    output = maaslin_gf_dir,
+    fixed_effects = c("treatment_group"),
+    reference = "treatment_group,ApcMUT_HpKO",
+    normalization = "TSS",
+    transform = "LOG",
+    analysis_method = "LM",
+    max_significance = 0.25,
+    min_abundance = 0.0001,
+    min_prevalence = 0.1,
+    cores = 1,
+    plot_heatmap = FALSE,
+    plot_scatter = FALSE
+  )
+
+  gf_results <- fit_gf$results %>%
+    filter(metadata == "treatment_group") %>%
+    arrange(pval)
+
+  cat("\nGene Families差异分析结果:\n")
+  cat(sprintf("总检测: %d\n", nrow(gf_results)))
+  cat(sprintf("P < 0.05: %d\n", sum(gf_results$pval < 0.05)))
+  cat(sprintf("FDR < 0.25: %d\n", sum(gf_results$qval < 0.25)))
+
+  write.csv(gf_results,
+            file = file.path(output_dir, "03_genefamilies_daa_results.csv"),
+            row.names = FALSE)
+} else {
+  cat("Gene Families数量仍太大或为0，跳过MaAsLin2分析\n")
+  cat("建议进一步过滤或使用其他方法\n")
+}
+```
+
+## Part 4: 综合比较
+
+```{r}
+#| label: part4-summary
+#| echo: false
+#| results: asis
+
+cat("\n## 扩展功能分析汇总\n\n")
+
+cat("| 数据类型 | 检测特征数 | P<0.05 | FDR<0.25 | FDR<0.05 |\n")
+cat("|----------|------------|--------|----------|----------|\n")
+
+if (exists("go_results")) {
+  cat(sprintf("| GO | %d | %d | %d | %d |\n",
+              nrow(go_results),
+              sum(go_results$pval < 0.05),
+              sum(go_results$qval < 0.25),
+              sum(go_results$qval < 0.05)))
+}
+
+if (exists("pfam_results")) {
+  cat(sprintf("| PFAM | %d | %d | %d | %d |\n",
+              nrow(pfam_results),
+              sum(pfam_results$pval < 0.05),
+              sum(pfam_results$qval < 0.25),
+              sum(pfam_results$qval < 0.05)))
+}
+
+if (exists("gf_results")) {
+  cat(sprintf("| Gene Families | %d | %d | %d | %d |\n",
+              nrow(gf_results),
+              sum(gf_results$pval < 0.05),
+              sum(gf_results$qval < 0.25),
+              sum(gf_results$qval < 0.05)))
+}
+
+cat("\n### 结论\n\n")
+cat("- 如果GO/PFAM层面仍无显著差异，进一步支持**功能冗余假说**\n")
+cat("- 如果发现显著差异，可能揭示被Pathway/KO掩盖的精细功能变化\n")
+```
+
+```{r}
+#| label: session-info
+
+cat("\n【分析环境信息】\n")
+cat("R版本:", R.version.string, "\n")
+cat("分析日期:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
+```

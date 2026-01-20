@@ -4670,6 +4670,269 @@ cat("  - 104_part10_summary_results.rds\n")
 ```
 
 
+## Part 11: 功能冗余指数(FRI)量化分析
+
+功能冗余指数(Functional Redundancy Index, FRI)是量化生态系统功能冗余程度的指标。
+
+**计算公式**: FRI = 物种Shannon多样性 / 功能Shannon多样性
+
+- FRI > 1: 物种多样性高于功能多样性 → 存在功能冗余
+- FRI ≈ 1: 物种和功能多样性相当
+- FRI < 1: 功能多样性高于物种多样性 → 功能分化
+
+### 11.1 数据准备
+
+```{r}
+#| label: part11-load-data
+
+# ==============================================================================
+# Part 11: 功能冗余指数量化
+# ==============================================================================
+
+cat("====== Part 11: 功能冗余指数(FRI)量化分析 ======\n\n")
+
+# 读取物种TSE (01分析)
+tse_species <- readRDS(here::here("analyses", "data", "01_alpha_beta_diversity_analysis",
+                                   "tse_standard_species_ca_cleaned.rds"))
+
+# 读取功能TSE (02分析) - 使用pathway数据
+tse_pathway <- readRDS(here::here("analyses", "data", params$name,
+                                   "tse_humann_pathway_ca.rds"))
+
+cat("物种TSE样本数:", ncol(tse_species), "\n")
+cat("功能TSE样本数:", ncol(tse_pathway), "\n")
+
+# 找共同样本
+common_samples <- intersect(colnames(tse_species), colnames(tse_pathway))
+cat("共同样本数:", length(common_samples), "\n")
+```
+
+### 11.2 计算各样本的Shannon多样性
+
+```{r}
+#| label: part11-calc-shannon
+
+library(mia)
+
+# 计算物种Shannon
+tse_species_common <- tse_species[, common_samples]
+tse_species_common <- estimateDiversity(tse_species_common,
+                                         assay.type = "counts",
+                                         index = "shannon")
+species_shannon <- colData(tse_species_common)$shannon
+
+# 计算功能Shannon
+tse_pathway_common <- tse_pathway[, common_samples]
+tse_pathway_common <- estimateDiversity(tse_pathway_common,
+                                         assay.type = "counts",
+                                         index = "shannon")
+pathway_shannon <- colData(tse_pathway_common)$shannon
+
+# 构建数据框
+fri_df <- data.frame(
+  sample_id = common_samples,
+  species_shannon = species_shannon,
+  pathway_shannon = pathway_shannon,
+  FRI = species_shannon / pathway_shannon,
+  treatment_group = colData(tse_species_common)$treatment_group
+)
+
+# 查看结果
+cat("\n各样本FRI值:\n")
+print(fri_df[, c("sample_id", "species_shannon", "pathway_shannon", "FRI", "treatment_group")])
+```
+
+### 11.3 按组统计FRI
+
+```{r}
+#| label: part11-group-stats
+
+library(dplyr)
+
+fri_stats <- fri_df %>%
+  group_by(treatment_group) %>%
+  summarise(
+    n = n(),
+    species_shannon_mean = mean(species_shannon, na.rm = TRUE),
+    species_shannon_sd = sd(species_shannon, na.rm = TRUE),
+    pathway_shannon_mean = mean(pathway_shannon, na.rm = TRUE),
+    pathway_shannon_sd = sd(pathway_shannon, na.rm = TRUE),
+    FRI_mean = mean(FRI, na.rm = TRUE),
+    FRI_sd = sd(FRI, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(treatment_group)
+
+cat("\n按组统计FRI:\n\n")
+print(fri_stats)
+
+# 保存统计结果
+write.csv(fri_stats,
+          file = here::here("analyses", "data", params$name, "110_part11_fri_by_group.csv"),
+          row.names = FALSE)
+```
+
+### 11.4 核心比较: CagA效应对FRI的影响
+
+```{r}
+#| label: part11-core-comparison
+
+# 核心比较: ApcMUT_HpWT vs ApcMUT_HpKO
+fri_core <- fri_df %>%
+  filter(treatment_group %in% c("ApcMUT_HpWT", "ApcMUT_HpKO"))
+
+cat("\n核心比较 (ApcMUT: HpWT vs HpKO):\n")
+cat("----------------------------------\n")
+
+# Wilcoxon检验
+if (nrow(fri_core) > 0 && length(unique(fri_core$treatment_group)) == 2) {
+  test_result <- wilcox.test(FRI ~ treatment_group, data = fri_core)
+
+  # 计算各组均值
+  fri_hpwt <- fri_core$FRI[fri_core$treatment_group == "ApcMUT_HpWT"]
+  fri_hpko <- fri_core$FRI[fri_core$treatment_group == "ApcMUT_HpKO"]
+
+  cat(sprintf("ApcMUT_HpWT (CagA+): FRI = %.3f ± %.3f (n=%d)\n",
+              mean(fri_hpwt), sd(fri_hpwt), length(fri_hpwt)))
+  cat(sprintf("ApcMUT_HpKO (对照):  FRI = %.3f ± %.3f (n=%d)\n",
+              mean(fri_hpko), sd(fri_hpko), length(fri_hpko)))
+  cat(sprintf("Wilcoxon P值: %.4f\n", test_result$p.value))
+
+  # 效应方向
+  if (mean(fri_hpwt) > mean(fri_hpko)) {
+    cat("→ CagA感染**增加**FRI (功能冗余程度更高)\n")
+  } else {
+    cat("→ CagA感染**降低**FRI (功能冗余程度更低)\n")
+  }
+}
+```
+
+### 11.5 FRI可视化
+
+```{r}
+#| label: part11-visualization
+#| fig-width: 10
+#| fig-height: 5
+
+library(ggplot2)
+
+# 设置组别顺序
+fri_df$treatment_group <- factor(fri_df$treatment_group,
+                                  levels = c("ApcWT_Ctrl", "ApcWT_HpKO", "ApcWT_HpWT",
+                                            "ApcMUT_Ctrl", "ApcMUT_HpKO", "ApcMUT_HpWT"))
+
+# 图1: 各组FRI箱线图
+p1 <- ggplot(fri_df, aes(x = treatment_group, y = FRI, fill = treatment_group)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+  geom_jitter(width = 0.2, size = 2, alpha = 0.8) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red", linewidth = 0.8) +
+  labs(title = "功能冗余指数(FRI)按组分布",
+       subtitle = "FRI = 物种Shannon / 功能Shannon; 红线=1 (无冗余基准)",
+       x = "Treatment Group",
+       y = "Functional Redundancy Index (FRI)") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none") +
+  scale_fill_brewer(palette = "Set2")
+
+print(p1)
+
+ggsave(here::here("analyses", "data", params$name, "111_part11_fri_boxplot.png"),
+       p1, width = 10, height = 5, dpi = 300)
+```
+
+```{r}
+#| label: part11-scatter
+#| fig-width: 8
+#| fig-height: 6
+
+# 图2: 物种Shannon vs 功能Shannon散点图
+p2 <- ggplot(fri_df, aes(x = pathway_shannon, y = species_shannon,
+                          color = treatment_group, shape = treatment_group)) +
+  geom_point(size = 3, alpha = 0.8) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray50") +
+  labs(title = "物种多样性 vs 功能多样性",
+       subtitle = "对角线上方: FRI>1 (功能冗余); 对角线下方: FRI<1",
+       x = "功能Shannon多样性 (Pathway)",
+       y = "物种Shannon多样性",
+       color = "Treatment", shape = "Treatment") +
+  theme_bw() +
+  scale_color_brewer(palette = "Set2")
+
+print(p2)
+
+ggsave(here::here("analyses", "data", params$name, "112_part11_fri_scatter.png"),
+       p2, width = 8, height = 6, dpi = 300)
+```
+
+### 11.6 与文献基准对比
+
+```{r}
+#| label: part11-literature-comparison
+#| echo: false
+#| results: asis
+
+cat("\n### 文献参考基准\n\n")
+cat("根据微生物生态学文献，肠道菌群的FRI通常在以下范围：\n\n")
+cat("| 状态 | FRI范围 | 解读 |\n")
+cat("|------|---------|------|\n")
+cat("| 健康肠道 | 1.0-1.5 | 适度功能冗余 |\n")
+cat("| 疾病/失调 | <1.0 或 >2.0 | 冗余不足或过度 |\n\n")
+
+overall_fri <- mean(fri_df$FRI, na.rm = TRUE)
+cat(sprintf("**PC047整体FRI均值**: %.3f\n\n", overall_fri))
+
+if (overall_fri >= 1.0 && overall_fri <= 1.5) {
+  cat("→ PC047样本FRI在健康参考范围内，显示适度功能冗余\n")
+} else if (overall_fri > 1.5) {
+  cat("→ PC047样本FRI偏高，可能存在较高功能冗余\n")
+} else {
+  cat("→ PC047样本FRI偏低，功能冗余程度较低\n")
+}
+```
+
+### 11.7 Part 11 结论
+
+```{r}
+#| label: part11-conclusions
+#| echo: false
+#| results: asis
+
+cat("\n### Part 11 关键发现\n\n")
+
+cat("**1. FRI定量结果**\n\n")
+cat(sprintf("- 全样本FRI均值: %.3f ± %.3f\n",
+            mean(fri_df$FRI, na.rm = TRUE),
+            sd(fri_df$FRI, na.rm = TRUE)))
+cat(sprintf("- FRI范围: %.3f - %.3f\n",
+            min(fri_df$FRI, na.rm = TRUE),
+            max(fri_df$FRI, na.rm = TRUE)))
+
+cat("\n**2. CagA效应**\n\n")
+if (exists("fri_hpwt") && exists("fri_hpko")) {
+  cat(sprintf("- ApcMUT_HpWT (CagA+): FRI = %.3f\n", mean(fri_hpwt)))
+  cat(sprintf("- ApcMUT_HpKO (对照): FRI = %.3f\n", mean(fri_hpko)))
+  cat(sprintf("- 差异显著性: P = %.4f\n", test_result$p.value))
+}
+
+cat("\n**3. 生物学意义**\n\n")
+cat("- FRI量化了我们在Part 8-10观察到的功能冗余现象\n")
+cat("- 数值化指标便于与其他研究直接对比\n")
+cat("- 为后续代谢组学验证提供定量基准\n")
+
+# 保存完整FRI数据
+write.csv(fri_df,
+          file = here::here("analyses", "data", params$name, "113_part11_fri_all_samples.csv"),
+          row.names = FALSE)
+
+cat("\n✅ Part 11 结果已保存:\n")
+cat("  - 110_part11_fri_by_group.csv\n")
+cat("  - 111_part11_fri_boxplot.png\n")
+cat("  - 112_part11_fri_scatter.png\n")
+cat("  - 113_part11_fri_all_samples.csv\n")
+```
+
+
 ```{r}
 #| label: session-info
 

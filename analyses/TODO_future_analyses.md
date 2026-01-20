@@ -24,7 +24,7 @@
 
 **预计耗时**: ~2小时
 
-**状态**: [ ] 待执行
+**状态**: [x] 已创建 02b_extended_functional_analysis.qmd
 
 ---
 
@@ -46,7 +46,7 @@
 
 **预计耗时**: ~1小时
 
-**状态**: [ ] 待执行
+**状态**: [x] 已添加到 02_functional_profiling.qmd Part 11
 
 ---
 
@@ -69,7 +69,7 @@
 
 **预计耗时**: ~3小时
 
-**状态**: [ ] 待执行
+**状态**: [x] 已创建 03c_cooccurrence_network_analysis.qmd (含细菌-噬菌体跨域网络)
 
 ---
 
