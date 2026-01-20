@@ -42,7 +42,7 @@ library(igraph)
 library(corrplot)
 
 # 创建输出目录
-output_dir <- here::here("analyses", "data", params$name)
+output_dir <- here::here("data", params$name)
 if (!dir.exists(output_dir)) {
   dir.create(output_dir, recursive = TRUE)
 }
@@ -58,7 +58,7 @@ cat("输出目录:", output_dir, "\n")
 #| label: part1-load-bacteria
 
 # 读取清洗后的细菌TSE
-tse_bacteria <- readRDS(here::here("analyses", "data", "01_alpha_beta_diversity_analysis",
+tse_bacteria <- readRDS(here::here("data", "01_alpha_beta_diversity_analysis",
                                     "tse_standard_species_ca_cleaned.rds"))
 
 cat("细菌TSE:\n")
@@ -76,7 +76,7 @@ print(table(metadata$treatment_group))
 #| label: part1-load-phage
 
 # 检查噬菌体TSE是否存在
-phage_file <- here::here("analyses", "data", "03_singlem_diversity_analysis",
+phage_file <- here::here("data", "03_singlem_diversity_analysis",
                           "tse_lyrebird.rds")
 
 if (file.exists(phage_file)) {
@@ -97,7 +97,7 @@ if (file.exists(phage_file)) {
 #| label: part1-common-samples
 
 if (has_phage) {
-  common_samples <- intersect(colnames(tse_bacteria), colnames(tse_phage))
+  common_samples <- base::intersect(colnames(tse_bacteria), colnames(tse_phage))
   cat("细菌-噬菌体共同样本数:", length(common_samples), "\n")
 } else {
   common_samples <- colnames(tse_bacteria)
@@ -121,7 +121,16 @@ bacteria_filtered <- bacteria_counts[prevalence >= 0.2, ]
 cat("Prevalence过滤后物种数:", nrow(bacteria_filtered), "\n")
 
 # 转换为相对丰度
-bacteria_relab <- sweep(bacteria_filtered, 2, colSums(bacteria_filtered), "/")
+bacteria_relab_all <- sweep(bacteria_filtered, 2, colSums(bacteria_filtered), "/")
+
+# 只保留Top 100高丰度物种用于网络分析
+# 原因：1) 计算效率；2) 样本数少时统计意义有限；3) 聚焦主要物种
+max_species_network <- 100
+mean_abundance <- rowMeans(bacteria_relab_all)
+top_species <- names(sort(mean_abundance, decreasing = TRUE))[1:min(max_species_network, length(mean_abundance))]
+bacteria_relab <- bacteria_relab_all[top_species, , drop = FALSE]
+
+cat("网络分析使用Top", nrow(bacteria_relab), "高丰度物种\n")
 ```
 
 ### 2.2 计算Spearman相关性
@@ -200,7 +209,30 @@ for (grp in groups_to_compare) {
 
   # 计算该组的相关性
   grp_relab <- bacteria_relab[, grp_samples]
-  grp_cor <- cor(t(grp_relab), method = "spearman")
+
+  # 过滤掉标准差为0的物种（避免相关系数变NA）
+  row_sds <- apply(grp_relab, 1, sd)
+  grp_relab_filtered <- grp_relab[row_sds > 0, , drop = FALSE]
+
+  # 只保留Top N高丰度物种（样本数太少时，物种数也应限制）
+  # 经验法则：物种数不应超过样本数的10-20倍
+  max_species <- min(nrow(grp_relab_filtered), length(grp_samples) * 20, 100)
+  mean_abundance <- rowMeans(grp_relab_filtered)
+  top_species <- names(sort(mean_abundance, decreasing = TRUE))[1:max_species]
+  grp_relab_top <- grp_relab_filtered[top_species, , drop = FALSE]
+
+  cat(sprintf("\n%s: 原始%d → 非恒定%d → Top %d高丰度物种\n",
+              grp, nrow(grp_relab), nrow(grp_relab_filtered), nrow(grp_relab_top)))
+
+  if (nrow(grp_relab_top) < 3) {
+    cat(sprintf("  物种数不足，跳过网络构建\n"))
+    next
+  }
+
+  grp_cor <- cor(t(grp_relab_top), method = "spearman")
+
+  # 处理可能残留的NA（理论上不应该有了）
+  grp_cor[is.na(grp_cor)] <- 0
 
   # 构建网络
   grp_adj <- abs(grp_cor) >= cor_threshold
@@ -251,8 +283,8 @@ if (ecount(g_all) > 0 && ecount(g_all) < 500) {
   set.seed(42)
   layout <- layout_with_fr(g_all)
 
-  # 节点大小基于度
-  V(g_all)$size <- degree(g_all) + 3
+  # 节点大小基于度 (显式使用igraph::degree避免与ape冲突)
+  V(g_all)$size <- igraph::degree(g_all) + 3
 
   # 边颜色基于正负相关
   E(g_all)$color <- ifelse(E(g_all)$sign == "positive", "steelblue", "tomato")
@@ -279,10 +311,11 @@ if (ecount(g_all) > 0 && ecount(g_all) < 500) {
 #| label: part2-hub-species
 
 if (ecount(g_all) > 0) {
-  # 计算中心性指标
-  degree_cent <- degree(g_all)
-  betweenness_cent <- betweenness(g_all)
-  closeness_cent <- closeness(g_all)
+  # 计算中心性指标 (显式使用igraph::避免与ape冲突)
+  # 注意：betweenness/closeness 不使用权重，因为相关系数可为负
+  degree_cent <- igraph::degree(g_all)
+  betweenness_cent <- igraph::betweenness(g_all, weights = NA)
+  closeness_cent <- igraph::closeness(g_all, weights = NA)
 
   hub_df <- data.frame(
     species = V(g_all)$name,

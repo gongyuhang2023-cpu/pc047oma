@@ -26,6 +26,43 @@ tse <- readRDS(here::here("analyses/data/01_alpha_beta_diversity_analysis/tse_st
 - Statistics: ANCOM-BC/ALDEx2/MaAsLin2 for differential abundance
 - Output: Quarto (.qmd) with `embed-resources: true`
 
+### Namespace Conflicts (重要)
+
+为避免包函数冲突，必须显式指定命名空间：
+
+```r
+# dplyr 函数 (常与 MASS, stats 冲突)
+dplyr::select()
+dplyr::filter()
+dplyr::lag()
+dplyr::rename()
+
+# base R 函数 (常与 dplyr, lubridate 冲突)
+base::intersect()
+base::setdiff()
+base::union()
+
+# mia 函数 (使用新版 API)
+mia::addAlpha()        # 替代已弃用的 estimateDiversity()
+mia::addBeta()         # 替代已弃用的 runMDS() 等
+
+# igraph 函数 (常与 ape 冲突)
+igraph::degree()
+igraph::betweenness()
+igraph::closeness()
+```
+
+### Path Convention
+
+qmd 文件在 `analyses/` 目录下，使用 `here::here()` 时不要重复 `"analyses"`：
+```r
+# 正确
+here::here("data", "01_alpha_beta_diversity_analysis", "xxx.rds")
+
+# 错误 (会变成 analyses/analyses/data/...)
+here::here("analyses", "data", "01_alpha_beta_diversity_analysis", "xxx.rds")
+```
+
 ## Skills Available
 
 ### /notebooklm - OMA & Protocol Reference

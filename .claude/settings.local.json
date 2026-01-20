@@ -22,7 +22,24 @@
       "mcp__paper-search__download_pubmed",
       "WebFetch(domain:journals.plos.org)",
       "WebFetch(domain:bmcgastroenterol.biomedcentral.com)",
-      "WebFetch(domain:www.nature.com)"
+      "WebFetch(domain:www.nature.com)",
+      "Bash(git stash:*)",
+      "Bash(gh auth:*)",
+      "Bash(git config:*)",
+      "Bash(git clone:*)",
+      "Bash(winget install:*)",
+      "Bash(\"/c/Program Files/GitHub CLI/gh.exe\" repo clone gongyuhang2023-cpu/skill-snapshots)",
+      "Bash(for dir in */)",
+      "Bash(do if [ \"$dir\" != \".git/\" ])",
+      "Bash(then cp -r \"$dir\" ../)",
+      "Bash(fi)",
+      "Bash(done)",
+      "Bash(claude:*)",
+      "Bash(npm show:*)",
+      "Bash(winget search:*)",
+      "Bash(git fetch:*)",
+      "Bash(git merge:*)",
+      "Bash(pip install:*)"
     ]
   }
 }

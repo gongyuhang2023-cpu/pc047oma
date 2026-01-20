@@ -165,8 +165,8 @@ cat("系统发育树 tip 数:", length(otu_tree$tip.label), "\n")
 # Step 5: 构建 TreeSummarizedExperiment 对象
 # ==============================================================================
 # 确保 OTU ID 顺序一致
-common_otus <- intersect(rownames(otu_abundance), rownames(otu_taxonomy))
-common_otus <- intersect(common_otus, otu_tree$tip.label)
+common_otus <- base::intersect(rownames(otu_abundance), rownames(otu_taxonomy))
+common_otus <- base::intersect(common_otus, otu_tree$tip.label)
 
 cat("共同 OTU 数:", length(common_otus), "\n")
 
@@ -201,7 +201,7 @@ metadata <- readxl::read_xlsx(
   column_to_rownames("sample_id")
 
 # 匹配样本名
-common_samples <- intersect(colnames(tse_singlem), rownames(metadata))
+common_samples <- base::intersect(colnames(tse_singlem), rownames(metadata))
 cat("匹配的样本数:", length(common_samples), "\n")
 
 tse_singlem <- tse_singlem[, common_samples]
@@ -586,7 +586,7 @@ cat("OTU 矩阵中的 OTU 数量:", length(otu_names), "\n")
 cat("系统发育树的 tip 数量:", length(tree_tips), "\n")
 
 # 检查匹配情况
-in_both <- intersect(otu_names, tree_tips)
+in_both <- base::intersect(otu_names, tree_tips)
 only_in_otu <- setdiff(otu_names, tree_tips)
 only_in_tree <- setdiff(tree_tips, otu_names)
 
@@ -692,7 +692,7 @@ tryCatch({
   tree_for_unifrac <- rowTree(tse_singlem_corepair)
 
   # 确保 OTU 和树完全匹配
-  common_taxa <- intersect(rownames(tse_singlem_corepair), tree_for_unifrac$tip.label)
+  common_taxa <- base::intersect(rownames(tse_singlem_corepair), tree_for_unifrac$tip.label)
   cat("使用", length(common_taxa), "个共同 OTU 进行 UniFrac 计算\n")
 
   # 子集化 TSE 对象以确保匹配
@@ -992,8 +992,8 @@ cat("Lyrebird 系统发育树 tip 数:", length(lyrebird_tree$tip.label), "\n")
 # ==============================================================================
 # Step 5: 构建 TSE 对象
 # ==============================================================================
-common_otus_lyrebird <- intersect(rownames(lyrebird_abundance), rownames(lyrebird_taxonomy))
-common_otus_lyrebird <- intersect(common_otus_lyrebird, lyrebird_tree$tip.label)
+common_otus_lyrebird <- base::intersect(rownames(lyrebird_abundance), rownames(lyrebird_taxonomy))
+common_otus_lyrebird <- base::intersect(common_otus_lyrebird, lyrebird_tree$tip.label)
 
 cat("Lyrebird 共同 OTU 数:", length(common_otus_lyrebird), "\n")
 
@@ -1011,7 +1011,7 @@ tse_lyrebird <- TreeSummarizedExperiment(
 )
 
 # 绑定元数据
-common_samples_lyrebird <- intersect(colnames(tse_lyrebird), rownames(metadata))
+common_samples_lyrebird <- base::intersect(colnames(tse_lyrebird), rownames(metadata))
 tse_lyrebird <- tse_lyrebird[, common_samples_lyrebird]
 colData(tse_lyrebird) <- DataFrame(metadata[common_samples_lyrebird, ])
 
@@ -1203,7 +1203,7 @@ cat("OTU 矩阵中的 OTU 数量:", length(otu_names_lyrebird), "\n")
 cat("系统发育树的 tip 数量:", length(tree_tips_lyrebird), "\n")
 
 # 检查匹配情况
-in_both_lyrebird <- intersect(otu_names_lyrebird, tree_tips_lyrebird)
+in_both_lyrebird <- base::intersect(otu_names_lyrebird, tree_tips_lyrebird)
 cat("两者共有的 OTU:", length(in_both_lyrebird), "\n")
 
 # 检查树结构
@@ -1281,7 +1281,7 @@ lyrebird_unifrac_success <- FALSE
 
 tryCatch({
   tree_for_unifrac_lyrebird <- rowTree(tse_lyrebird_corepair)
-  common_taxa_lyrebird <- intersect(rownames(tse_lyrebird_corepair), tree_for_unifrac_lyrebird$tip.label)
+  common_taxa_lyrebird <- base::intersect(rownames(tse_lyrebird_corepair), tree_for_unifrac_lyrebird$tip.label)
   cat("使用", length(common_taxa_lyrebird), "个共同 OTU 进行 UniFrac 计算\n")
 
   tse_for_unifrac_lyrebird <- tse_lyrebird_corepair[common_taxa_lyrebird, ]
@@ -1675,7 +1675,7 @@ p_heatmap <- ggplot(heatmap_data, aes(x = Method, y = Analysis, fill = neg_log_p
 bar_data <- summary_table |>
   pivot_longer(cols = c(SingleM, Lyrebird, Bracken),
                names_to = "Method", values_to = "P_value") |>
-  filter(!is.na(P_value)) |>
+  dplyr::filter(!is.na(P_value)) |>
   mutate(
     neg_log_p = -log10(P_value),
     Method = factor(Method, levels = c("SingleM", "Lyrebird", "Bracken")),
@@ -1726,7 +1726,7 @@ ggsave(
 cat("=== Host-Virus 关联分析 ===\n\n")
 
 # 获取共同样本
-common_samples_hv <- intersect(
+common_samples_hv <- base::intersect(
   colnames(tse_singlem_corepair),
   colnames(tse_lyrebird_corepair)
 )
@@ -2626,11 +2626,11 @@ twoway_combined |>
 # ==============================================================================
 # 检查交互作用是否显著
 singlem_interaction_p <- twoway_combined |>
-  filter(Data == "SingleM", grepl("×", Term)) |>
+  dplyr::filter(Data == "SingleM", grepl("×", Term)) |>
   pull(`Pr(>F)`)
 
 lyrebird_interaction_p <- twoway_combined |>
-  filter(Data == "Lyrebird", grepl("×", Term)) |>
+  dplyr::filter(Data == "Lyrebird", grepl("×", Term)) |>
   pull(`Pr(>F)`)
 
 # 处理空值或 NA

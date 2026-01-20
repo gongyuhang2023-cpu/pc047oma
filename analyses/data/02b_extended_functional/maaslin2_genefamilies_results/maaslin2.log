@@ -1,0 +1,113 @@
+2026-01-20 12:02:37.133713 INFO::Writing function arguments to log file
+2026-01-20 12:02:37.135546 DEBUG::Function arguments
+2026-01-20 12:02:37.136168 DEBUG::Output folder: C:/Users/36094/Desktop/pc047oma/analyses/data/02b_extended_functional/maaslin2_genefamilies_results
+2026-01-20 12:02:37.136668 DEBUG::Min Abundance: 0.000100
+2026-01-20 12:02:37.137169 DEBUG::Min Prevalence: 0.100000
+2026-01-20 12:02:37.13776 DEBUG::Normalization: TSS
+2026-01-20 12:02:37.138383 DEBUG::Transform: LOG
+2026-01-20 12:02:37.13893 DEBUG::Analysis method: LM
+2026-01-20 12:02:37.139439 DEBUG::Max significance: 0.250000
+2026-01-20 12:02:37.139944 DEBUG::Random effects:
+2026-01-20 12:02:37.140434 DEBUG::Fixed effects: treatment_group
+2026-01-20 12:02:37.141134 DEBUG::Correction method: BH
+2026-01-20 12:02:37.141658 DEBUG::Standardize: TRUE
+2026-01-20 12:02:37.142136 DEBUG::Cores: 1
+2026-01-20 12:02:37.142698 INFO::Verifying options selected are valid
+2026-01-20 12:02:37.14424 INFO::Determining format of input files
+2026-01-20 12:02:37.145529 INFO::Input format is data samples as rows and metadata samples as rows
+2026-01-20 12:02:37.147119 DEBUG::A total of 9 samples were found in both the data and metadata
+2026-01-20 12:02:37.147749 DEBUG::Reordering data/metadata to use same sample ordering
+2026-01-20 12:02:37.148775 INFO::Formula for fixed effects: expr ~  treatment_group
+2026-01-20 12:02:37.150531 INFO::Filter data based on min abundance and min prevalence
+2026-01-20 12:02:37.151916 INFO::Total samples in data: 9
+2026-01-20 12:02:37.15339 INFO::Min samples required with min abundance for a feature not to be filtered: 0.900000
+2026-01-20 12:02:37.155101 INFO::Total filtered features: 1
+2026-01-20 12:02:37.156293 INFO::Filtered feature names from abundance and prevalence filtering: UniClust90_41604.LAEPDEDC_00584
+2026-01-20 12:02:37.158288 INFO::Total filtered features with variance filtering: 0
+2026-01-20 12:02:37.15983 INFO::Filtered feature names from variance filtering:
+2026-01-20 12:02:37.161032 INFO::Running selected normalization method: TSS
+2026-01-20 12:02:37.162966 INFO::Applying z-score to standardize continuous metadata
+2026-01-20 12:02:37.165652 INFO::Running selected transform method: LOG
+2026-01-20 12:02:37.167777 INFO::Running selected analysis method: LM
+2026-01-20 12:02:37.17096 INFO::Fitting model to feature number 1, UniClust90_16807.IDFPLMNG_03757
+2026-01-20 12:02:37.176404 INFO::Fitting model to feature number 2, UniClust90_21441.CAOCNFHN_00906
+2026-01-20 12:02:37.182125 INFO::Fitting model to feature number 3, UniClust90_21441.NJOHNJCG_01071
+2026-01-20 12:02:37.186644 INFO::Fitting model to feature number 4, UniClust90_40283.PGAJOGNC_02314
+2026-01-20 12:02:37.191381 INFO::Fitting model to feature number 5, UniClust90_40285.EPEEOBDK_02476
+2026-01-20 12:02:37.195486 INFO::Fitting model to feature number 6, UniClust90_40285.IAHIHCDK_00580
+2026-01-20 12:02:37.200755 INFO::Fitting model to feature number 7, UniClust90_40285.KOOCCCBI_00608
+2026-01-20 12:02:37.205504 INFO::Fitting model to feature number 8, UniClust90_40285.LMMLBGFG_02712
+2026-01-20 12:02:37.209643 INFO::Fitting model to feature number 9, UniClust90_40327.FGHBMGNK_00425
+2026-01-20 12:02:37.213366 INFO::Fitting model to feature number 10, UniClust90_40368.CBOEGLAA_01739
+2026-01-20 12:02:37.217635 INFO::Fitting model to feature number 11, UniClust90_41310.NBDFAIIE_01685
+2026-01-20 12:02:37.222871 INFO::Fitting model to feature number 12, UniClust90_41417.HDNCLDIK_01960
+2026-01-20 12:02:37.22745 INFO::Fitting model to feature number 13, UniClust90_41457.NFFMAMJI_01048
+2026-01-20 12:02:37.231404 INFO::Fitting model to feature number 14, UniClust90_41551.GAJJKOFK_00879
+2026-01-20 12:02:37.23611 INFO::Fitting model to feature number 15, UniClust90_41559.IDPOMBJD_04092
+2026-01-20 12:02:37.311077 INFO::Fitting model to feature number 16, UniClust90_41579.JJMMCFOM_03094
+2026-01-20 12:02:37.31602 INFO::Fitting model to feature number 17, UniClust90_41580.LHONBIMK_03156
+2026-01-20 12:02:37.320545 INFO::Fitting model to feature number 18, UniClust90_41580.NHNMHOMN_02733
+2026-01-20 12:02:37.324817 INFO::Fitting model to feature number 19, UniClust90_41589.IIPEMNAD_00092
+2026-01-20 12:02:37.328849 INFO::Fitting model to feature number 20, UniClust90_41589.JLPAHMOD_01349
+2026-01-20 12:02:37.333699 INFO::Fitting model to feature number 21, UniClust90_41589.LLLFBKOB_02367
+2026-01-20 12:02:37.338566 INFO::Fitting model to feature number 22, UniClust90_41612.GDJAPIHN_01184
+2026-01-20 12:02:37.343265 INFO::Fitting model to feature number 23, UniClust90_41663.AMAHEHLD_00311
+2026-01-20 12:02:37.347283 INFO::Fitting model to feature number 24, UniClust90_45125.ENCNADPN_00356
+2026-01-20 12:02:37.352156 INFO::Fitting model to feature number 25, UniClust90_45125.ENCNADPN_00715
+2026-01-20 12:02:37.35724 INFO::Fitting model to feature number 26, UniClust90_45125.ENCNADPN_00717
+2026-01-20 12:02:37.834779 INFO::Fitting model to feature number 27, UniClust90_45125.IPHJJDGI_00591
+2026-01-20 12:02:37.840019 INFO::Fitting model to feature number 28, UniClust90_45199.IDHPAOIP_00937
+2026-01-20 12:02:37.844531 INFO::Fitting model to feature number 29, UniClust90_59900.IFKNLAIP_01253
+2026-01-20 12:02:37.849165 INFO::Fitting model to feature number 30, UniRef90_A0A061IGN8
+2026-01-20 12:02:37.853736 INFO::Fitting model to feature number 31, UniRef90_A0A0E9DCK8
+2026-01-20 12:02:37.858741 INFO::Fitting model to feature number 32, UniRef90_A0A0N5E796
+2026-01-20 12:02:37.863461 INFO::Fitting model to feature number 33, UniRef90_A0A173XZL4
+2026-01-20 12:02:37.868592 INFO::Fitting model to feature number 34, UniRef90_A0A192CDZ5
+2026-01-20 12:02:37.873393 INFO::Fitting model to feature number 35, UniRef90_A0A1B1S6K4
+2026-01-20 12:02:37.878463 INFO::Fitting model to feature number 36, UniRef90_A0A1B1S7R9
+2026-01-20 12:02:37.883599 INFO::Fitting model to feature number 37, UniRef90_A0A1B1SCZ0
+2026-01-20 12:02:39.720968 INFO::Fitting model to feature number 38, UniRef90_A0A1Q6JY87
+2026-01-20 12:02:39.725274 INFO::Fitting model to feature number 39, UniRef90_A0A1U8CVM4
+2026-01-20 12:02:39.729065 INFO::Fitting model to feature number 40, UniRef90_A0A1X6RL82
+2026-01-20 12:02:39.733105 INFO::Fitting model to feature number 41, UniRef90_A0A1X6RME2
+2026-01-20 12:02:39.737116 INFO::Fitting model to feature number 42, UniRef90_A0A3A8ZLW4
+2026-01-20 12:02:39.742727 INFO::Fitting model to feature number 43, UniRef90_A0A3A9FEX7
+2026-01-20 12:02:39.747057 INFO::Fitting model to feature number 44, UniRef90_A0A3N2KEI3
+2026-01-20 12:02:39.751579 INFO::Fitting model to feature number 45, UniRef90_A0A3N2KI80
+2026-01-20 12:02:39.756126 INFO::Fitting model to feature number 46, UniRef90_A0A3N2LUA1
+2026-01-20 12:02:39.76048 INFO::Fitting model to feature number 47, UniRef90_A0A3N2LUK0
+2026-01-20 12:02:39.765394 INFO::Fitting model to feature number 48, UniRef90_A0A3N2N4J0
+2026-01-20 12:02:42.175084 INFO::Fitting model to feature number 49, UniRef90_A0A3N2N6L5
+2026-01-20 12:02:42.179469 INFO::Fitting model to feature number 50, UniRef90_B5CLP5
+2026-01-20 12:02:42.18378 INFO::Fitting model to feature number 51, UniRef90_F6ZBU4
+2026-01-20 12:02:42.187656 INFO::Fitting model to feature number 52, UniRef90_O00370
+2026-01-20 12:02:42.191976 INFO::Fitting model to feature number 53, UniRef90_P04026
+2026-01-20 12:02:42.195997 INFO::Fitting model to feature number 54, UniRef90_Q6QI14
+2026-01-20 12:02:42.200441 INFO::Fitting model to feature number 55, UniRef90_Q6TXE2
+2026-01-20 12:02:42.204905 INFO::Fitting model to feature number 56, UniRef90_Q7R7C4
+2026-01-20 12:02:42.209206 INFO::Fitting model to feature number 57, UniRef90_Q7TMB6
+2026-01-20 12:02:42.213342 INFO::Fitting model to feature number 58, UniRef90_Q7TQ38
+2026-01-20 12:02:42.217647 INFO::Fitting model to feature number 59, UniRef90_Q9ZZM8
+2026-01-20 12:02:42.292655 INFO::Fitting model to feature number 60, UniRef90_R9IVR6
+2026-01-20 12:02:42.297058 INFO::Fitting model to feature number 61, UniRef90_R9J3W6
+2026-01-20 12:02:42.302651 INFO::Fitting model to feature number 62, UniRef90_R9J6C4
+2026-01-20 12:02:42.306685 INFO::Fitting model to feature number 63, UniRef90_R9KB99
+2026-01-20 12:02:42.310778 INFO::Fitting model to feature number 64, UniRef90_R9N4V6
+2026-01-20 12:02:42.315455 INFO::Fitting model to feature number 65, UniRef90_S0J3V0
+2026-01-20 12:02:42.319886 INFO::Fitting model to feature number 66, UniRef90_UNK41635.BPHPLFNE_01638
+2026-01-20 12:02:42.324187 INFO::Fitting model to feature number 67, UniRef90_UNK45199.OHEBKGNH_00262
+2026-01-20 12:02:42.328488 INFO::Fitting model to feature number 68, UniRef90_UPI0005ABADA2
+2026-01-20 12:02:42.332788 INFO::Fitting model to feature number 69, UniRef90_UPI0008102124
+2026-01-20 12:02:42.336908 INFO::Fitting model to feature number 70, UniRef90_UPI0008134D77
+2026-01-20 12:02:42.34115 INFO::Fitting model to feature number 71, UniRef90_UPI00081A1282
+2026-01-20 12:02:42.806857 INFO::Fitting model to feature number 72, UniRef90_UPI000FFED5DC
+2026-01-20 12:02:42.810853 INFO::Fitting model to feature number 73, UniRef90_UPI0010939CFD
+2026-01-20 12:02:42.815323 INFO::Fitting model to feature number 74, UniRef90_V9H0W7
+2026-01-20 12:02:42.824263 INFO::Counting total values for each feature
+2026-01-20 12:02:42.827402 INFO::Writing filtered data to file C:/Users/36094/Desktop/pc047oma/analyses/data/02b_extended_functional/maaslin2_genefamilies_results/features/filtered_data.tsv
+2026-01-20 12:02:42.830905 INFO::Writing filtered, normalized data to file C:/Users/36094/Desktop/pc047oma/analyses/data/02b_extended_functional/maaslin2_genefamilies_results/features/filtered_data_norm.tsv
+2026-01-20 12:02:42.834971 INFO::Writing filtered, normalized, transformed data to file C:/Users/36094/Desktop/pc047oma/analyses/data/02b_extended_functional/maaslin2_genefamilies_results/features/filtered_data_norm_transformed.tsv
+2026-01-20 12:02:42.83965 INFO::Writing residuals to file C:/Users/36094/Desktop/pc047oma/analyses/data/02b_extended_functional/maaslin2_genefamilies_results/fits/residuals.rds
+2026-01-20 12:02:42.84294 INFO::Writing fitted values to file C:/Users/36094/Desktop/pc047oma/analyses/data/02b_extended_functional/maaslin2_genefamilies_results/fits/fitted.rds
+2026-01-20 12:02:42.845355 INFO::Writing all results to file (ordered by increasing q-values): C:/Users/36094/Desktop/pc047oma/analyses/data/02b_extended_functional/maaslin2_genefamilies_results/all_results.tsv
+2026-01-20 12:02:42.848842 INFO::Writing the significant results (those which are less than or equal to the threshold of 0.250000 ) to file (ordered by increasing q-values): C:/Users/36094/Desktop/pc047oma/analyses/data/02b_extended_functional/maaslin2_genefamilies_results/significant_results.tsv

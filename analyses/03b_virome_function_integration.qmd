@@ -164,7 +164,7 @@ corr_to_edges <- function(cor_result, cor_threshold = 0.5, fdr_threshold = 0.25,
   df <- corr_to_df(cor_result)
 
   df |>
-    filter(abs_cor > cor_threshold, qvalue < fdr_threshold) |>
+    dplyr::filter(abs_cor > cor_threshold, qvalue < fdr_threshold) |>
     transmute(
       from = .data[[names(df)[1]]],
       to = .data[[names(df)[2]]],
@@ -323,7 +323,7 @@ print(top_pairs |> dplyr::select(phage, ko, correlation, qvalue))
 write.csv(phage_ko_pairs |> arrange(qvalue),
           file = path_target("01_phage_ko_correlation_all.csv"), row.names = FALSE)
 
-sig_pairs <- phage_ko_pairs |> filter(qvalue < 0.25)
+sig_pairs <- phage_ko_pairs |> dplyr::filter(qvalue < 0.25)
 if (nrow(sig_pairs) > 0) {
   write.csv(sig_pairs |> arrange(qvalue),
             file = path_target("02_phage_ko_correlation_significant.csv"), row.names = FALSE)

@@ -39,14 +39,14 @@ library(dplyr)
 library(ggplot2)
 library(Maaslin2)
 
-# 创建输出目录
-output_dir <- here::here("analyses", "data", params$name)
+# 创建输出目录 (qmd在analyses目录下，不需要重复"analyses")
+output_dir <- here::here("data", params$name)
 if (!dir.exists(output_dir)) {
   dir.create(output_dir, recursive = TRUE)
 }
 
 # 数据目录
-humann_dir <- here::here("analyses", "data", "00-raw", "d02_functional_profiling", "humann4")
+humann_dir <- here::here("data", "00-raw", "d02_functional_profiling", "humann4")
 
 cat("数据目录:", humann_dir, "\n")
 cat("输出目录:", output_dir, "\n")
@@ -82,14 +82,14 @@ if (file.exists(go_file)) {
 #| label: part1-load-metadata
 
 # 从01分析读取清洗后的TSE获取元数据
-tse_ref <- readRDS(here::here("analyses", "data", "01_alpha_beta_diversity_analysis",
+tse_ref <- readRDS(here::here("data", "01_alpha_beta_diversity_analysis",
                                "tse_standard_species_ca_cleaned.rds"))
 
 metadata <- as.data.frame(colData(tse_ref))
 cat("元数据样本数:", nrow(metadata), "\n")
 
-# 匹配样本
-common_samples <- intersect(colnames(go_raw), rownames(metadata))
+# 匹配样本 (显式使用base::intersect避免命名空间冲突)
+common_samples <- base::intersect(colnames(go_raw), rownames(metadata))
 cat("共同样本数:", length(common_samples), "\n")
 
 # 过滤
@@ -158,7 +158,7 @@ fit_go <- Maaslin2(
 #| label: part1-go-results
 
 go_results <- fit_go$results %>%
-  filter(metadata == "treatment_group") %>%
+  dplyr::filter(metadata == "treatment_group") %>%
   arrange(pval)
 
 cat("\nGO差异分析结果:\n")
@@ -248,7 +248,7 @@ fit_pfam <- Maaslin2(
 #| label: part2-pfam-results
 
 pfam_results <- fit_pfam$results %>%
-  filter(metadata == "treatment_group") %>%
+  dplyr::filter(metadata == "treatment_group") %>%
   arrange(pval)
 
 cat("\nPFAM差异分析结果:\n")
@@ -360,7 +360,7 @@ if (nrow(gf_final) > 0 && nrow(gf_final) < 50000) {
   )
 
   gf_results <- fit_gf$results %>%
-    filter(metadata == "treatment_group") %>%
+    dplyr::filter(metadata == "treatment_group") %>%
     arrange(pval)
 
   cat("\nGene Families差异分析结果:\n")
