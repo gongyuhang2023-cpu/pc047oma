@@ -23,12 +23,20 @@ analyses/data/00-raw/
 # ===================
 analyses/tmp/
 *.tmp
+.tmp.driveupload/
+
+# ===================
+# Windows 系统文件
+# ===================
+desktop.ini
+Thumbs.db
 
 # ===================
 # 分析结果文件 (可从代码重新生成)
 # ===================
 # HTML渲染结果
 analyses/*.html
+analyses/_output/
 
 # 数据输出目录 (png, csv, rds等)
 analyses/data/01_*/

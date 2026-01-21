@@ -39,7 +39,8 @@
       "Bash(winget search:*)",
       "Bash(git fetch:*)",
       "Bash(git merge:*)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "Skill(meeting-ppt-generator)"
     ]
   }
 }
