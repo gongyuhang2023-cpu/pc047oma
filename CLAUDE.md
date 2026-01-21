@@ -83,18 +83,26 @@ Key papers: PMID 26121046, 39910460, 32728212
 ### Paper Search (MCP)
 Search/download papers from arXiv, PubMed, bioRxiv, Semantic Scholar.
 
-## Project Directory (项目目录)
+## 项目导航准则 (Navigation Guidelines)
 
-**详细的项目结构、文件索引、数据路径请查阅 `项目目录.md`**
+本项目使用 `项目目录.md` 作为 **Claude 的核心导航索引**。
 
-该文件包含：
-- 核心文档索引（分析报告、TODO 计划）
-- 分析文件说明（.qmd 文件内容和输出）
-- 数据文件结构（原始数据、分析输出、RDS 对象路径）
-- 参考资料索引（OMA BOOK 章节、Protocol、参考文献）
-- PPT 生成脚本
-- Claude 自定义命令
-- 常用 R 代码路径速查
+**重要**: 在执行文件搜索或复杂操作前，**必须先读取 `项目目录.md`** 以：
+- 快速定位目标文件（通过完整路径）
+- 了解项目架构（无需全量扫描）
+- 使用 `#标签` 检索相关文件
+- 减少 Token 消耗
+
+`git-auto-sync` 技能会在每次同步时自动更新该文件的时间戳。
+
+### 项目目录内容
+
+| 部分 | 用途 |
+|------|------|
+| 项目架构 | 文件夹职能速览 |
+| 关键文件锚点 | 完整路径 + `#标签` 索引 |
+| 最近变动 | 最新上下文 |
+| 常用 R 代码 | 可直接复制的数据加载代码 |
 
 ## Reference Documents
 
