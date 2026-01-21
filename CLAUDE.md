@@ -83,12 +83,27 @@ Key papers: PMID 26121046, 39910460, 32728212
 ### Paper Search (MCP)
 Search/download papers from arXiv, PubMed, bioRxiv, Semantic Scholar.
 
+## Project Directory (项目目录)
+
+**详细的项目结构、文件索引、数据路径请查阅 `项目目录.md`**
+
+该文件包含：
+- 核心文档索引（分析报告、TODO 计划）
+- 分析文件说明（.qmd 文件内容和输出）
+- 数据文件结构（原始数据、分析输出、RDS 对象路径）
+- 参考资料索引（OMA BOOK 章节、Protocol、参考文献）
+- PPT 生成脚本
+- Claude 自定义命令
+- 常用 R 代码路径速查
+
 ## Reference Documents
 
 | Need | Document |
 |------|----------|
+| **完整项目结构** | `项目目录.md` |
 | Analysis results | `analyses/00_analysis_summary_report.md` |
 | Hypothesis & findings | `analyses/PC047_analysis_brief_report.md` |
+| Future analyses | `analyses/TODO_future_analyses.md` |
 | Method details | Query `/notebooklm` for OMA chapters |
 | Protocols | `analyses/Protocol/*.pdf` |
 
@@ -98,18 +113,26 @@ Search/download papers from arXiv, PubMed, bioRxiv, Semantic Scholar.
 |----------|---------|----------------|
 | Species Beta | **0.012** | Community restructured |
 | Functional Beta | **0.012** | Composition differs |
+| Phage diversity | **0.032** | Bacteria-phage co-change |
 | Pathway DAA | >0.05 | Functional redundancy |
 | Species-KO pairs | 78 (FDR<0.05) | Candidate targets |
 
-## Structure
+## Structure (简化版，详见 项目目录.md)
 
 ```
-analyses/
-├── 01_alpha_beta_diversity_analysis.qmd  # Kraken2/Bracken
-├── 02_functional_profiling.qmd           # HUMAnN4
-├── 03_singlem_diversity_analysis.qmd     # SingleM/Lyrebird
-├── 03b_virome_function_integration.qmd   # Virome integration
-├── data/                                 # git-ignored
-├── OMA BOOK/                             # Method reference
-└── Protocol/                             # Analysis protocols
+pc047oma/
+├── analyses/
+│   ├── 01_alpha_beta_diversity_analysis.qmd  # Kraken2/Bracken
+│   ├── 02_functional_profiling.qmd           # HUMAnN4
+│   ├── 02b_extended_functional_analysis.qmd  # GO/PFAM
+│   ├── 03_singlem_diversity_analysis.qmd     # SingleM/Lyrebird
+│   ├── 03b_virome_function_integration.qmd   # Virome integration
+│   ├── 03c_cooccurrence_network_analysis.qmd # Co-occurrence network
+│   ├── data/                                 # git-ignored
+│   ├── learning_notes/                       # 学习笔记
+│   ├── OMA BOOK/                             # Method reference
+│   └── Protocol/                             # Analysis protocols
+├── PPT/                                      # 组会 PPT
+├── CLAUDE.md                                 # 本文件
+└── 项目目录.md                               # 详细项目索引
 ```
