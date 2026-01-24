@@ -2284,16 +2284,16 @@ cat("交互作用: R² =", round(permanova_infected$R2[3], 4),
 # 定义关键比较（6个假设驱动的比较）
 key_comparisons <- list(
   # 1. CagA效应（核心问题）
-  list(pair = c("ApcMUT_HpWT", "ApcMUT_HpKO"), question = "CagA效应@变异鼠"),
-  list(pair = c("ApcWT_HpWT", "ApcWT_HpKO"), question = "CagA效应@野生型"),
+  list(pair = c("ApcMUT_HpWT", "ApcMUT_HpKO"), question = "CagA effect @ApcMUT"),
+  list(pair = c("ApcWT_HpWT", "ApcWT_HpKO"), question = "CagA effect @ApcWT"),
 
   # 2. Apc基因型效应
-  list(pair = c("ApcMUT_HpWT", "ApcWT_HpWT"), question = "Apc效应@CagA+感染"),
-  list(pair = c("ApcMUT_HpKO", "ApcWT_HpKO"), question = "Apc效应@CagA-感染"),
+  list(pair = c("ApcMUT_HpWT", "ApcWT_HpWT"), question = "Apc effect @CagA+"),
+  list(pair = c("ApcMUT_HpKO", "ApcWT_HpKO"), question = "Apc effect @CagA-"),
 
   # 3. 感染效应（vs Ctrl）
-  list(pair = c("ApcMUT_HpWT", "ApcMUT_Ctrl"), question = "感染效应@变异鼠(CagA+)"),
-  list(pair = c("ApcMUT_HpKO", "ApcMUT_Ctrl"), question = "感染效应@变异鼠(CagA-)")
+  list(pair = c("ApcMUT_HpWT", "ApcMUT_Ctrl"), question = "Infection @ApcMUT(CagA+)"),
+  list(pair = c("ApcMUT_HpKO", "ApcMUT_Ctrl"), question = "Infection @ApcMUT(CagA-)")
 )
 
 # 执行成对PERMANOVA

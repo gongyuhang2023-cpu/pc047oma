@@ -152,7 +152,7 @@ cat("相关矩阵维度:", dim(cor_matrix), "\n")
 #| label: part2-build-network
 
 # 设置相关性阈值
-cor_threshold <- 0.6
+cor_threshold <- 0.75  # 提高阈值减少边数
 p_threshold <- 0.05
 
 # 计算p值
@@ -215,8 +215,8 @@ for (grp in groups_to_compare) {
   grp_relab_filtered <- grp_relab[row_sds > 0, , drop = FALSE]
 
   # 只保留Top N高丰度物种（样本数太少时，物种数也应限制）
-  # 经验法则：物种数不应超过样本数的10-20倍
-  max_species <- min(nrow(grp_relab_filtered), length(grp_samples) * 20, 100)
+  # 统一使用 Top 50，与可视化保持一致
+  max_species <- min(nrow(grp_relab_filtered), 50)
   mean_abundance <- rowMeans(grp_relab_filtered)
   top_species <- names(sort(mean_abundance, decreasing = TRUE))[1:max_species]
   grp_relab_top <- grp_relab_filtered[top_species, , drop = FALSE]
@@ -302,6 +302,129 @@ if (ecount(g_all) > 0 && ecount(g_all) < 500) {
   cat("建议提高相关性阈值或使用专门的网络可视化工具\n")
 } else {
   cat("网络无边，跳过可视化\n")
+}
+```
+
+### 2.5b 分组网络对比可视化
+
+```{r}
+#| label: part2-group-network-viz
+#| fig-width: 14
+#| fig-height: 7
+
+# ========== 分组网络对比可视化 ==========
+cat("\n====== 生成分组网络对比图 ======\n")
+
+# 设置更高的可视化阈值
+viz_cor_threshold <- 0.75
+
+png(file.path(output_dir, "03_network_comparison.png"),
+    width = 1400, height = 700, res = 150)
+
+par(mfrow = c(1, 2), mar = c(2, 2, 4, 2))
+
+for (grp in groups_to_compare) {
+  grp_samples <- rownames(metadata)[metadata$treatment_group == grp]
+  grp_relab <- bacteria_relab[, grp_samples]
+
+  # 过滤
+  row_sds <- apply(grp_relab, 1, sd)
+  grp_relab_filtered <- grp_relab[row_sds > 0, , drop = FALSE]
+
+  # 只取 Top 50 高丰度物种
+  max_species <- min(50, nrow(grp_relab_filtered))
+  mean_abundance <- rowMeans(grp_relab_filtered)
+  top_species <- names(sort(mean_abundance, decreasing = TRUE))[1:max_species]
+  grp_relab_top <- grp_relab_filtered[top_species, , drop = FALSE]
+
+  # 计算相关性
+  grp_cor <- cor(t(grp_relab_top), method = "spearman")
+  grp_cor[is.na(grp_cor)] <- 0
+
+  # 用更高阈值构建网络
+  grp_adj <- abs(grp_cor) >= viz_cor_threshold
+  diag(grp_adj) <- FALSE
+
+  g_grp <- graph_from_adjacency_matrix(grp_adj, mode = "undirected")
+
+  # 计算模块度
+  mod_value <- if (ecount(g_grp) > 0) modularity(cluster_louvain(g_grp)) else 0
+
+  if (ecount(g_grp) > 0) {
+    set.seed(42)
+    layout_grp <- layout_with_fr(g_grp)
+
+    # 节点大小基于度
+    deg <- igraph::degree(g_grp)
+    V(g_grp)$size <- deg / max(deg) * 12 + 4
+
+    # 节点颜色基于模块
+    if (ecount(g_grp) > 0) {
+      communities <- cluster_louvain(g_grp)
+      V(g_grp)$color <- rainbow(max(membership(communities)))[membership(communities)]
+    }
+
+    plot(g_grp,
+         layout = layout_grp,
+         vertex.label = NA,
+         edge.color = "gray60",
+         edge.width = 0.5,
+         main = sprintf("%s\nNodes: %d | Edges: %d | Modularity: %.3f",
+                       grp, vcount(g_grp), ecount(g_grp), mod_value))
+  } else {
+    plot.new()
+    text(0.5, 0.5, paste(grp, "\nNo edges at threshold", viz_cor_threshold))
+  }
+}
+
+dev.off()
+cat("✅ 网络对比图已保存: 03_network_comparison.png\n")
+```
+
+### 2.5c 网络统计柱状图
+
+```{r}
+#| label: part2-stats-barplot
+#| fig-width: 12
+#| fig-height: 5
+
+# ========== 网络统计柱状图 ==========
+
+if (nrow(network_stats_df) >= 2) {
+  # 准备长格式数据
+  stats_for_plot <- network_stats_df %>%
+    dplyr::select(group, n_nodes, n_edges, modularity) %>%
+    pivot_longer(cols = -group, names_to = "metric", values_to = "value") %>%
+    mutate(metric = factor(metric,
+                          levels = c("n_nodes", "n_edges", "modularity"),
+                          labels = c("Nodes", "Edges", "Modularity")))
+
+  # 计算变化
+  ctrl_mod <- network_stats_df$modularity[network_stats_df$group == "ApcMUT_HpKO"]
+  caga_mod <- network_stats_df$modularity[network_stats_df$group == "ApcMUT_HpWT"]
+  mod_change <- round((caga_mod - ctrl_mod) / ctrl_mod * 100, 0)
+
+  p_stats <- ggplot(stats_for_plot, aes(x = metric, y = value, fill = group)) +
+    geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
+    geom_text(aes(label = round(value, 3)),
+              position = position_dodge(width = 0.8), vjust = -0.5, size = 3.5) +
+    theme_bw(base_size = 14) +
+    labs(title = "Network Topology Changes: CagA Effect",
+         subtitle = sprintf("Modularity change: %d%% (from %.3f to %.3f)",
+                           mod_change, ctrl_mod, caga_mod),
+         x = NULL, y = "Value",
+         fill = "Group") +
+    scale_fill_manual(values = c("ApcMUT_HpKO" = "#66c2a5", "ApcMUT_HpWT" = "#fc8d62"),
+                      labels = c("Control (HpKO)", "CagA+ (HpWT)")) +
+    facet_wrap(~metric, scales = "free_y", nrow = 1) +
+    theme(legend.position = "bottom")
+
+  print(p_stats)
+
+  ggsave(file.path(output_dir, "04_network_stats_barplot.png"),
+         plot = p_stats, width = 12, height = 5, dpi = 300)
+
+  cat("✅ 网络统计图已保存: 04_network_stats_barplot.png\n")
 }
 ```
 
