@@ -1892,14 +1892,14 @@ df_singlem_pcoa <- data.frame(
   PC1 = bacteria_pcoa[, 1],
   PC2 = bacteria_pcoa[, 2],
   sample = rownames(bacteria_pcoa),
-  treatment_group = sample_data$treatment_group
+  treatment_group = diversity_data$treatment_group
 )
 
 df_lyrebird_pcoa <- data.frame(
   PC1 = phage_pcoa[, 1],
   PC2 = phage_pcoa[, 2],
   sample = rownames(phage_pcoa),
-  treatment_group = sample_data$treatment_group
+  treatment_group = diversity_data$treatment_group
 )
 
 # 绘制细菌 PCoA
@@ -1982,14 +1982,14 @@ cat("✅ 细菌-噬菌体 Beta 多样性对比图已保存: 30_bacteria_phage_be
 
 # 提取 Procrustes 旋转后的坐标
 df_procrustes <- data.frame(
-  sample = common_samples,
+  sample = common_samples_hv,
   # Target (bacteria)
   bact_x = procrustes_result$X[, 1],
   bact_y = procrustes_result$X[, 2],
   # Rotated (phage)
   phage_x = procrustes_result$Yrot[, 1],
   phage_y = procrustes_result$Yrot[, 2],
-  treatment_group = sample_data$treatment_group
+  treatment_group = diversity_data$treatment_group
 )
 
 # 绘制 Procrustes 图
