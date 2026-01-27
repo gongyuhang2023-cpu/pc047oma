@@ -2782,9 +2782,9 @@ if (file.exists(here::here("data", params$name, "48_part4_effect_summary.csv")) 
 }
 ```
 
-## Part 5: 扩展分层成对比较 - 全面验证G×E交互作用
+# Part 4: 分层成对比较 - Standard {#sec-pairwise-standard}
 
-本部分对所有9个科学相关的组间比较进行系统分析，以验证：
+本部分对所有9个科学相关的组间比较进行系统分析，以验证G×E交互作用：
 1. **Apc效应在不同感染状态下的变化** - 感染是否"抹平"Apc基因型差异？
 2. **感染效应在不同遗传背景下的变化** - CagA效应是否依赖Apc突变？
 3. **感染梯度效应** - Ctrl → HpKO → HpWT是否存在递进变化？
@@ -2796,7 +2796,7 @@ if (file.exists(here::here("data", params$name, "48_part4_effect_summary.csv")) 
 #| message: false
 
 # ------------------------------------------------------------------------------
-# Part 4: 分层成对比较 - Standard {#sec-pairwise-standard}
+# 分层成对比较分析
 # 共9个比较，分为3类科学问题
 # ------------------------------------------------------------------------------
 
