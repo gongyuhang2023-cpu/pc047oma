@@ -590,6 +590,335 @@ if (has_phage) {
 }
 ```
 
+## Part 6: 细菌-噬菌体网络结构对比
+
+```{r}
+#| label: part6-bacteria-phage-network
+#| fig-width: 9
+#| fig-height: 8
+#| eval: !expr has_phage
+
+# ==============================================================================
+# 细菌 vs 噬菌体共现网络对比分析
+# ==============================================================================
+
+cat("\n====== Part 6: 细菌-噬菌体网络对比 ======\n")
+
+# 加载噬菌体数据
+tse_phage_net <- readRDS(here::here("data", "03_singlem_diversity_analysis",
+                                     "tse_lyrebird_corepair.rds"))
+
+# 定义网络构建函数
+build_network_for_group <- function(tse, samples, top_n = 50, cor_threshold = 0.6) {
+  counts <- assay(tse, "counts")[, samples, drop = FALSE]
+
+  # 计算相对丰度
+  grp_relab <- sweep(counts, 2, colSums(counts) + 1, "/")
+
+  # 过滤低变异物种
+  row_sds <- apply(grp_relab, 1, sd)
+  grp_relab <- grp_relab[row_sds > 0, , drop = FALSE]
+
+  # 取Top N
+  n_species <- min(top_n, nrow(grp_relab))
+  mean_abund <- rowMeans(grp_relab)
+  top_species <- names(sort(mean_abund, decreasing = TRUE))[1:n_species]
+  grp_relab <- grp_relab[top_species, , drop = FALSE]
+
+  # 计算相关性
+  cor_mat <- cor(t(grp_relab), method = "spearman")
+  cor_mat[is.na(cor_mat)] <- 0
+
+  # 构建邻接矩阵
+  adj_mat <- abs(cor_mat) >= cor_threshold
+  diag(adj_mat) <- FALSE
+
+  # 构建igraph
+  g <- graph_from_adjacency_matrix(adj_mat, mode = "undirected")
+
+  # 计算模块度
+  if (ecount(g) > 0) {
+    comm <- cluster_louvain(g)
+    mod <- modularity(comm)
+  } else {
+    mod <- 0
+  }
+
+  return(list(
+    n_nodes = vcount(g),
+    n_edges = ecount(g),
+    modularity = mod,
+    graph = g
+  ))
+}
+
+# 获取样本分组
+phage_meta <- as.data.frame(colData(tse_phage_net))
+phage_hpko <- rownames(phage_meta)[phage_meta$treatment_group == "ApcMUT_HpKO"]
+phage_hpwt <- rownames(phage_meta)[phage_meta$treatment_group == "ApcMUT_HpWT"]
+
+# 构建网络
+cat("构建细菌网络...\n")
+bact_net_hpko <- build_network_for_group(tse_bacteria,
+                                          rownames(metadata)[metadata$treatment_group == "ApcMUT_HpKO"])
+bact_net_hpwt <- build_network_for_group(tse_bacteria,
+                                          rownames(metadata)[metadata$treatment_group == "ApcMUT_HpWT"])
+
+cat("构建噬菌体网络...\n")
+phage_net_hpko <- build_network_for_group(tse_phage_net, phage_hpko)
+phage_net_hpwt <- build_network_for_group(tse_phage_net, phage_hpwt)
+
+# 汇总统计
+bact_phage_stats_df <- data.frame(
+  data_type = c("Bacteria", "Bacteria", "Phage", "Phage"),
+  group = c("Control (HpKO)", "CagA+ (HpWT)", "Control (HpKO)", "CagA+ (HpWT)"),
+  group_short = c("Control", "CagA+", "Control", "CagA+"),
+  nodes = c(bact_net_hpko$n_nodes, bact_net_hpwt$n_nodes,
+            phage_net_hpko$n_nodes, phage_net_hpwt$n_nodes),
+  edges = c(bact_net_hpko$n_edges, bact_net_hpwt$n_edges,
+            phage_net_hpko$n_edges, phage_net_hpwt$n_edges),
+  modularity = c(bact_net_hpko$modularity, bact_net_hpwt$modularity,
+                 phage_net_hpko$modularity, phage_net_hpwt$modularity)
+)
+
+print(bact_phage_stats_df)
+
+# 计算变化百分比
+bact_mod_change <- (bact_net_hpwt$modularity - bact_net_hpko$modularity) /
+                   bact_net_hpko$modularity * 100
+
+phage_mod_change <- (phage_net_hpwt$modularity - phage_net_hpko$modularity) /
+                    phage_net_hpko$modularity * 100
+
+cat("\n细菌网络模块度变化:", round(bact_mod_change, 1), "%\n")
+cat("噬菌体网络模块度变化:", round(phage_mod_change, 1), "%\n")
+
+# 保存统计结果
+write.csv(bact_phage_stats_df,
+          file = file.path(output_dir, "05_bacteria_phage_network_stats.csv"),
+          row.names = FALSE)
+```
+
+### 6.1 模块度对比可视化
+
+```{r}
+#| label: part6-modularity-comparison
+#| fig-width: 8
+#| fig-height: 5
+#| eval: !expr has_phage
+
+# ==============================================================================
+# 细菌 vs 噬菌体网络模块度对比
+# ==============================================================================
+
+bact_phage_stats_df$group_short <- factor(bact_phage_stats_df$group_short,
+                                           levels = c("Control", "CagA+"))
+bact_phage_stats_df$data_type <- factor(bact_phage_stats_df$data_type,
+                                         levels = c("Bacteria", "Phage"))
+
+p_modularity_comparison <- ggplot(bact_phage_stats_df,
+                                   aes(x = group_short, y = modularity, fill = group_short)) +
+  geom_col(width = 0.6, alpha = 0.85) +
+  geom_text(aes(label = sprintf("%.3f", modularity)), vjust = -0.5, size = 4.5, fontface = "bold") +
+  facet_wrap(~data_type) +
+  scale_fill_manual(values = c("Control" = "#3498db", "CagA+" = "#e74c3c")) +
+  scale_y_continuous(limits = c(0, max(bact_phage_stats_df$modularity) * 1.2)) +
+  labs(
+    title = "Network Modularity: Bacteria vs Phage",
+    subtitle = sprintf("Both show decrease under CagA (Bacteria: %.0f%%, Phage: %.0f%%)",
+                       bact_mod_change, phage_mod_change),
+    x = NULL,
+    y = "Modularity",
+    fill = "Group"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 11, color = "gray30"),
+    legend.position = "none",
+    strip.background = element_rect(fill = "gray90"),
+    strip.text = element_text(face = "bold", size = 12)
+  )
+
+print(p_modularity_comparison)
+
+ggsave(
+  filename = file.path(output_dir, "06_bacteria_phage_modularity_comparison.png"),
+  plot = p_modularity_comparison,
+  width = 8, height = 5, dpi = 300
+)
+
+cat("✅ 模块度对比图已保存: 06_bacteria_phage_modularity_comparison.png\n")
+```
+
+### 6.2 网络可视化 (2x2 对比)
+
+```{r}
+#| label: part6-network-2x2
+#| fig-width: 12
+#| fig-height: 12
+#| eval: !expr has_phage
+
+# ==============================================================================
+# 2x2 网络可视化
+# ==============================================================================
+
+# 颜色方案
+get_colors <- function(n) {
+  if (n <= 8) {
+    return(c("#e74c3c", "#3498db", "#2ecc71", "#f39c12", "#9b59b6", "#1abc9c", "#e67e22", "#34495e")[1:n])
+  } else {
+    return(rainbow(n, s = 0.7, v = 0.8))
+  }
+}
+
+png(file.path(output_dir, "07_bacteria_phage_network_2x2.png"),
+    width = 1600, height = 1600, res = 150)
+
+par(mfrow = c(2, 2), mar = c(1, 1, 4, 1))
+
+set.seed(42)
+
+# --- 细菌 Control ---
+g <- bact_net_hpko$graph
+if (ecount(g) > 0) {
+  comm <- cluster_louvain(g)
+  V(g)$community <- membership(comm)
+  n_comm <- max(V(g)$community)
+  colors <- get_colors(n_comm)[V(g)$community]
+  V(g)$degree <- igraph::degree(g)
+  layout_bact <- layout_with_fr(g)
+
+  plot(g,
+       layout = layout_bact,
+       vertex.color = colors,
+       vertex.size = 3 + sqrt(V(g)$degree) * 2,
+       vertex.label = NA,
+       edge.color = rgb(0.5, 0.5, 0.5, 0.3),
+       edge.width = 0.5,
+       main = sprintf("Bacteria - Control (HpKO)\nEdges: %d | Modularity: %.3f",
+                      bact_net_hpko$n_edges, bact_net_hpko$modularity))
+}
+
+# --- 细菌 CagA+ ---
+g <- bact_net_hpwt$graph
+if (ecount(g) > 0) {
+  comm <- cluster_louvain(g)
+  V(g)$community <- membership(comm)
+  n_comm <- max(V(g)$community)
+  colors <- get_colors(n_comm)[V(g)$community]
+  V(g)$degree <- igraph::degree(g)
+
+  plot(g,
+       layout = layout_bact,
+       vertex.color = colors,
+       vertex.size = 3 + sqrt(V(g)$degree) * 2,
+       vertex.label = NA,
+       edge.color = rgb(0.5, 0.5, 0.5, 0.3),
+       edge.width = 0.5,
+       main = sprintf("Bacteria - CagA+ (HpWT)\nEdges: %d | Modularity: %.3f",
+                      bact_net_hpwt$n_edges, bact_net_hpwt$modularity))
+}
+
+set.seed(42)
+
+# --- 噬菌体 Control ---
+g <- phage_net_hpko$graph
+if (ecount(g) > 0) {
+  comm <- cluster_louvain(g)
+  V(g)$community <- membership(comm)
+  n_comm <- max(V(g)$community)
+  colors <- get_colors(n_comm)[V(g)$community]
+  V(g)$degree <- igraph::degree(g)
+  layout_phage <- layout_with_fr(g)
+
+  plot(g,
+       layout = layout_phage,
+       vertex.color = colors,
+       vertex.size = 3 + sqrt(V(g)$degree) * 2,
+       vertex.label = NA,
+       edge.color = rgb(0.5, 0.5, 0.5, 0.3),
+       edge.width = 0.5,
+       main = sprintf("Phage - Control (HpKO)\nEdges: %d | Modularity: %.3f",
+                      phage_net_hpko$n_edges, phage_net_hpko$modularity))
+}
+
+# --- 噬菌体 CagA+ ---
+g <- phage_net_hpwt$graph
+if (ecount(g) > 0) {
+  comm <- cluster_louvain(g)
+  V(g)$community <- membership(comm)
+  n_comm <- max(V(g)$community)
+  colors <- get_colors(n_comm)[V(g)$community]
+  V(g)$degree <- igraph::degree(g)
+
+  plot(g,
+       layout = layout_phage,
+       vertex.color = colors,
+       vertex.size = 3 + sqrt(V(g)$degree) * 2,
+       vertex.label = NA,
+       edge.color = rgb(0.5, 0.5, 0.5, 0.3),
+       edge.width = 0.5,
+       main = sprintf("Phage - CagA+ (HpWT)\nEdges: %d | Modularity: %.3f",
+                      phage_net_hpwt$n_edges, phage_net_hpwt$modularity))
+}
+
+dev.off()
+
+cat("✅ 2x2 网络对比图已保存: 07_bacteria_phage_network_2x2.png\n")
+```
+
+### 6.3 网络组合统计图
+
+```{r}
+#| label: part6-network-combined-stats
+#| fig-width: 9
+#| fig-height: 8
+#| eval: !expr has_phage
+
+# ==============================================================================
+# 网络统计组合图 (模块度 + 边数)
+# ==============================================================================
+
+# 边数对比图
+p_edges <- ggplot(bact_phage_stats_df, aes(x = group_short, y = edges, fill = group_short)) +
+  geom_col(width = 0.6, alpha = 0.85) +
+  geom_text(aes(label = edges), vjust = -0.5, size = 4.5, fontface = "bold") +
+  facet_wrap(~data_type) +
+  scale_fill_manual(values = c("Control" = "#3498db", "CagA+" = "#e74c3c")) +
+  scale_y_continuous(limits = c(0, max(bact_phage_stats_df$edges) * 1.15)) +
+  labs(
+    title = "Network Connectivity: Bacteria vs Phage",
+    x = NULL,
+    y = "Number of Edges",
+    fill = "Group"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    legend.position = "none",
+    strip.background = element_rect(fill = "gray90"),
+    strip.text = element_text(face = "bold", size = 12)
+  )
+
+# 组合图
+p_network_combined <- p_modularity_comparison / p_edges +
+  plot_annotation(
+    title = "Co-occurrence Network: Bacteria and Phage Both Restructure Under CagA",
+    theme = theme(plot.title = element_text(face = "bold", size = 15))
+  )
+
+print(p_network_combined)
+
+ggsave(
+  filename = file.path(output_dir, "08_bacteria_phage_network_combined.png"),
+  plot = p_network_combined,
+  width = 9, height = 8, dpi = 300
+)
+
+cat("✅ 网络组合统计图已保存: 08_bacteria_phage_network_combined.png\n")
+```
+
 ```{r}
 #| label: session-info
 

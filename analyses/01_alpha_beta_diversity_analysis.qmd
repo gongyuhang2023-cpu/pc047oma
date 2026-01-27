@@ -1179,6 +1179,161 @@ ANCOM-BC 在属水平上发现 [Clostridium] (LFC=0.37) 和 [Ruminococcus] (LFC=
 虽然两种找到的 Top 菌名不相同，但它们的方向是一致的——大部分差异菌在 HpWT 中都是下调的。
 这证明了 CagA 诱导的肠道环境对原位菌群具有极强的抑制作用？？？❗
 
+### 3.4 DAA 可视化
+
+#### 3.4.1 ALDEx2 效应量可视化
+
+```{r}
+#| label: daa-aldex2-effect-size-viz
+#| fig-width: 8
+#| fig-height: 5
+
+# ==============================================================================
+# ALDEx2 显著差异物种效应量可视化
+# ==============================================================================
+
+# 读取 ALDEx2 显著结果
+daa_aldex2_data <- read.csv(
+  here::here("data", params$name, "20_daa_aldex2_significant_species.csv")
+)
+
+if (nrow(daa_aldex2_data) > 0) {
+  # 数据整理
+  daa_aldex2_plot <- daa_aldex2_data |>
+    dplyr::rename(species = taxon, q_value = wi.eBH) |>
+    dplyr::mutate(
+      species = factor(species, levels = species[order(effect)]),
+      direction = ifelse(effect < 0, "Depleted in CagA+", "Enriched in CagA+"),
+      sig_label = dplyr::case_when(
+        q_value < 0.001 ~ "***",
+        q_value < 0.01 ~ "**",
+        q_value < 0.05 ~ "*",
+        TRUE ~ ""
+      )
+    )
+
+  # 绘制效应量条形图
+  p_aldex2_effect <- ggplot(daa_aldex2_plot,
+                             aes(x = effect, y = species, fill = direction)) +
+    geom_col(width = 0.7, alpha = 0.85) +
+    geom_vline(xintercept = 0, linetype = "solid", color = "gray30", linewidth = 0.5) +
+    geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "gray50", linewidth = 0.3) +
+    geom_text(aes(label = sig_label, x = effect - 0.1 * sign(effect)),
+              hjust = 1, vjust = 0.5, size = 4, color = "black") +
+    scale_fill_manual(values = c("Depleted in CagA+" = "#3498db",
+                                  "Enriched in CagA+" = "#e74c3c")) +
+    labs(
+      title = "Differentially Abundant Species (ALDEx2)",
+      subtitle = "Core comparison: ApcMUT_HpWT vs ApcMUT_HpKO",
+      x = "Effect Size",
+      y = NULL,
+      fill = "Direction",
+      caption = "Dashed lines: |effect| = 1 threshold; * q < 0.05, ** q < 0.01, *** q < 0.001"
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      plot.title = element_text(face = "bold", size = 14),
+      axis.text.y = element_text(face = "italic", size = 10),
+      legend.position = "bottom",
+      panel.grid.major.y = element_blank(),
+      panel.grid.minor = element_blank()
+    )
+
+  print(p_aldex2_effect)
+
+  ggsave(
+    filename = here::here("data", params$name, "22_daa_aldex2_effect_size.png"),
+    plot = p_aldex2_effect,
+    width = 8, height = 5, dpi = 300, bg = "white"
+  )
+
+  cat("✅ ALDEx2 效应量图已保存: 22_daa_aldex2_effect_size.png\n")
+} else {
+  cat("⚠️ 无 ALDEx2 显著差异物种，跳过可视化\n")
+}
+```
+
+#### 3.4.2 ANCOM-BC LFC 可视化
+
+```{r}
+#| label: daa-ancombc-lfc-viz
+#| fig-width: 10
+#| fig-height: 6
+
+# ==============================================================================
+# ANCOM-BC 结果可视化 (Top 10 物种)
+# ==============================================================================
+
+# 读取 ANCOM-BC 结果
+ancombc_species <- read.csv(
+  here::here("data", params$name, "18_daa_ancombc_top10_species.csv")
+)
+
+if (nrow(ancombc_species) > 0) {
+  # 数据整理 - 动态查找列名
+  lfc_col <- grep("^lfc_", colnames(ancombc_species), value = TRUE)[1]
+  q_col <- grep("^q_", colnames(ancombc_species), value = TRUE)[1]
+
+  ancombc_plot_data <- ancombc_species |>
+    dplyr::mutate(
+      taxon_short = taxon,
+      lfc = .data[[lfc_col]],
+      q_value = .data[[q_col]],
+      direction = ifelse(lfc < 0, "Depleted in CagA+", "Enriched in CagA+"),
+      sig_label = dplyr::case_when(
+        q_value < 0.05 ~ "*",
+        q_value < 0.1 ~ "†",
+        TRUE ~ ""
+      )
+    ) |>
+    dplyr::arrange(lfc)
+
+  # 设置因子顺序
+  ancombc_plot_data$taxon_short <- factor(
+    ancombc_plot_data$taxon_short,
+    levels = ancombc_plot_data$taxon_short
+  )
+
+  # 绘制条形图
+  p_ancombc <- ggplot(ancombc_plot_data,
+                       aes(x = lfc, y = taxon_short, fill = direction)) +
+    geom_col(width = 0.7) +
+    geom_vline(xintercept = 0, linetype = "solid", color = "black", linewidth = 0.5) +
+    geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "gray50", linewidth = 0.3) +
+    geom_text(aes(label = sig_label, x = lfc - 0.05 * sign(lfc)),
+              hjust = ifelse(ancombc_plot_data$lfc < 0, 1, 0),
+              size = 4, fontface = "bold") +
+    scale_fill_manual(values = c("Depleted in CagA+" = "#5DADE2",
+                                  "Enriched in CagA+" = "#E74C3C")) +
+    labs(
+      title = "Differentially Abundant Species (ANCOM-BC)",
+      subtitle = "Core comparison: ApcMUT_HpWT vs ApcMUT_HpKO\nNote: All FDR q > 0.05, showing consistent trend",
+      x = "Log Fold Change (LFC)",
+      y = NULL,
+      fill = "Direction",
+      caption = "Dashed lines: |LFC| = 1 threshold; * q < 0.05, † q < 0.1"
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      plot.title = element_text(face = "bold", size = 14),
+      plot.subtitle = element_text(size = 10, color = "gray40"),
+      axis.text.y = element_text(face = "italic", size = 10),
+      legend.position = "bottom",
+      panel.grid.major.y = element_blank(),
+      panel.grid.minor = element_blank()
+    )
+
+  print(p_ancombc)
+
+  ggsave(
+    filename = here::here("data", params$name, "23_daa_ancombc_lfc_barplot.png"),
+    plot = p_ancombc,
+    width = 10, height = 6, dpi = 300, bg = "white"
+  )
+
+  cat("✅ ANCOM-BC LFC 图已保存: 23_daa_ancombc_lfc_barplot.png\n")
+}
+```
 
 
 # Part 2 Virus Species & Genus
@@ -2464,10 +2619,96 @@ saveRDS(tse_full,
 cat("\n✅ Part 4 TSE对象已保存: tse_standard_species_full_factored.rds\n")
 ```
 
-```{r}
-#| label: data-visualization
+### 4.9 Part 4 英文版总结图
 
-# Your visualization code here
+```{r}
+#| label: part4-summary-figure-english
+#| fig-width: 14
+#| fig-height: 12
+
+# ==============================================================================
+# Part 4 英文版总结图 (用于PPT/论文)
+# ==============================================================================
+
+# 读取已保存的数据
+if (file.exists(here::here("data", params$name, "48_part4_effect_summary.csv")) &&
+    file.exists(here::here("data", params$name, "46_part4_pairwise_comparisons.csv"))) {
+
+  effect_summary_en <- read.csv(here::here("data", params$name, "48_part4_effect_summary.csv"))
+  pairwise_df_en <- read.csv(here::here("data", params$name, "46_part4_pairwise_comparisons.csv"))
+
+  # 修改成对比较的中文标签为英文
+  pairwise_df_en$question <- dplyr::case_when(
+    pairwise_df_en$question == "CagA效应@变异鼠" ~ "CagA effect @ApcMUT",
+    pairwise_df_en$question == "CagA效应@野生型" ~ "CagA effect @ApcWT",
+    pairwise_df_en$question == "Apc效应@CagA+感染" ~ "Apc effect @CagA+",
+    pairwise_df_en$question == "Apc效应@CagA-感染" ~ "Apc effect @CagA-",
+    pairwise_df_en$question == "感染效应@变异鼠(CagA+)" ~ "Infection @ApcMUT(CagA+)",
+    pairwise_df_en$question == "感染效应@变异鼠(CagA-)" ~ "Infection @ApcMUT(CagA-)",
+    TRUE ~ pairwise_df_en$question
+  )
+
+  # 1. PCoA 图 (使用已保存的 tse_full)
+  pcoa_coords_en <- as.data.frame(reducedDim(tse_full, "PCoA_Bray_Full"))
+  colnames(pcoa_coords_en) <- c("PC1", "PC2")
+  pcoa_coords_en <- cbind(pcoa_coords_en, as.data.frame(colData(tse_full)))
+
+  eig_full_en <- attr(reducedDim(tse_full, "PCoA_Bray_Full"), "eig")
+  rel_eig_full_en <- eig_full_en / sum(eig_full_en[eig_full_en > 0])
+
+  p4_pcoa_en <- ggplot(pcoa_coords_en, aes(x = PC1, y = PC2,
+                                            color = infection_factor, shape = genotype_factor)) +
+    geom_point(size = 4, alpha = 0.8) +
+    stat_ellipse(aes(group = treatment_group, linetype = genotype_factor),
+                 level = 0.80, show.legend = FALSE) +
+    theme_bw() +
+    labs(title = "PCoA: All 6 Treatment Groups (Bray-Curtis)",
+         x = paste0("PCoA 1 (", round(100 * rel_eig_full_en[1], 1), "%)"),
+         y = paste0("PCoA 2 (", round(100 * rel_eig_full_en[2], 1), "%)"),
+         color = "Infection", shape = "Genotype") +
+    scale_color_brewer(palette = "Set1") +
+    scale_shape_manual(values = c(16, 17))
+
+  # 2. 效应量柱状图
+  p4_effect_en <- ggplot(effect_summary_en, aes(x = Factor, y = R2_percent, fill = Analysis)) +
+    geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
+    geom_text(aes(label = paste0(R2_percent, "%")),
+              position = position_dodge(width = 0.8), vjust = -0.5, size = 3) +
+    theme_bw() +
+    labs(title = "Part 4: Effect Sizes (R²) from PERMANOVA",
+         x = "Factor", y = "Variance Explained (%)") +
+    scale_fill_brewer(palette = "Set2") +
+    ylim(0, max(effect_summary_en$R2_percent) * 1.2)
+
+  # 3. 成对比较图
+  pairwise_plot_data_en <- pairwise_df_en %>%
+    mutate(neg_log_p = -log10(p_adj),
+           label = paste0("R²=", R2, significance))
+
+  p4_pairwise_en <- ggplot(pairwise_plot_data_en, aes(x = reorder(question, neg_log_p),
+                                                       y = neg_log_p, fill = R2)) +
+    geom_bar(stat = "identity") +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
+    geom_hline(yintercept = -log10(0.1), linetype = "dotted", color = "orange") +
+    coord_flip() +
+    theme_bw() +
+    labs(title = "Pairwise Comparisons (FDR-corrected)",
+         x = "Comparison", y = "-log10(adjusted P-value)") +
+    scale_fill_gradient(low = "lightblue", high = "darkblue", name = "R²") +
+    annotate("text", x = 0.5, y = -log10(0.05), label = "P=0.05", color = "red", hjust = 0)
+
+  # 组合图
+  p4_combined_en <- (p4_pcoa_en | p4_effect_en) / p4_pairwise_en +
+    plot_annotation(title = "Part 4: Extended Analysis Summary (2×3 Factorial Design)")
+
+  print(p4_combined_en)
+
+  # 保存英文版
+  ggsave(here::here("data", params$name, "47_part4_summary_figure_EN.png"),
+         plot = p4_combined_en, width = 14, height = 12, dpi = 300)
+
+  cat("\n✅ Part 4 英文版总结图已保存: 47_part4_summary_figure_EN.png\n")
+}
 ```
 
 ## Part 5: 扩展分层成对比较 - 全面验证G×E交互作用

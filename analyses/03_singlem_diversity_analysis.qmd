@@ -1872,6 +1872,169 @@ write.csv(
 )
 ```
 
+### 14.2 细菌-噬菌体 Beta 多样性并排对比
+
+```{r}
+#| label: bacteria-phage-beta-combined
+#| fig-width: 12
+#| fig-height: 6
+
+# ==============================================================================
+# 细菌和噬菌体 PCoA 并排对比图 (更清晰的可视化)
+# ==============================================================================
+
+# 颜色设置
+group_colors <- c("ApcMUT_HpKO" = "#3498db", "ApcMUT_HpWT" = "#e74c3c")
+group_labels <- c("ApcMUT_HpKO" = "HpKO (Control)", "ApcMUT_HpWT" = "HpWT (CagA+)")
+
+# 准备数据框
+df_singlem_pcoa <- data.frame(
+  PC1 = bacteria_pcoa[, 1],
+  PC2 = bacteria_pcoa[, 2],
+  sample = rownames(bacteria_pcoa),
+  treatment_group = sample_data$treatment_group
+)
+
+df_lyrebird_pcoa <- data.frame(
+  PC1 = phage_pcoa[, 1],
+  PC2 = phage_pcoa[, 2],
+  sample = rownames(phage_pcoa),
+  treatment_group = sample_data$treatment_group
+)
+
+# 绘制细菌 PCoA
+p_bacteria_beta <- ggplot(df_singlem_pcoa, aes(x = PC1, y = PC2, color = treatment_group)) +
+  geom_point(size = 4, alpha = 0.8) +
+  stat_ellipse(level = 0.68, linetype = "dashed", linewidth = 0.8) +
+  scale_color_manual(values = group_colors, labels = group_labels) +
+  labs(
+    title = "Bacteria (SingleM)",
+    subtitle = paste0("PERMANOVA P = ", round(permanova_bray$permanova$`Pr(>F)`[1], 3)),
+    x = "PCoA 1",
+    y = "PCoA 2",
+    color = "Group"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    plot.title = element_text(face = "bold", size = 13),
+    legend.position = "none"
+  ) +
+  coord_fixed()
+
+# 绘制噬菌体 PCoA
+p_phage_beta <- ggplot(df_lyrebird_pcoa, aes(x = PC1, y = PC2, color = treatment_group)) +
+  geom_point(size = 4, alpha = 0.8) +
+  stat_ellipse(level = 0.68, linetype = "dashed", linewidth = 0.8) +
+  scale_color_manual(values = group_colors, labels = group_labels) +
+  labs(
+    title = "Phage (Lyrebird)",
+    subtitle = paste0("PERMANOVA P = ", round(permanova_lyrebird_bray$permanova$`Pr(>F)`[1], 3)),
+    x = "PCoA 1",
+    y = "PCoA 2",
+    color = "Group"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    plot.title = element_text(face = "bold", size = 13),
+    legend.position = "none"
+  ) +
+  coord_fixed()
+
+# 合并图
+p_beta_combined <- (p_bacteria_beta | p_phage_beta) +
+  plot_layout(guides = "collect") +
+  plot_annotation(
+    title = "Bacteria and Phage Communities Both Shift with CagA",
+    subtitle = paste0("Mantel test r = ", round(mantel_result$statistic, 3),
+                     ", P = ", round(mantel_result$signif, 4),
+                     " | Procrustes r = ", round(sqrt(1 - procrustes_result$ss), 3),
+                     ", P = ", round(procrustes_result$signif, 4)),
+    theme = theme(
+      plot.title = element_text(face = "bold", size = 15),
+      plot.subtitle = element_text(size = 11, color = "gray30")
+    )
+  )
+
+# 添加共享图例
+p_beta_combined <- p_beta_combined & theme(legend.position = "bottom")
+
+print(p_beta_combined)
+
+ggsave(
+  filename = here::here("data", params$name, "30_bacteria_phage_beta_combined.png"),
+  plot = p_beta_combined,
+  width = 12, height = 6, dpi = 300
+)
+
+cat("✅ 细菌-噬菌体 Beta 多样性对比图已保存: 30_bacteria_phage_beta_combined.png\n")
+```
+
+### 14.3 Procrustes 可视化 (箭头连接图)
+
+```{r}
+#| label: procrustes-arrow-plot
+#| fig-width: 8
+#| fig-height: 8
+
+# ==============================================================================
+# Procrustes 分析可视化 (带箭头的连接图)
+# ==============================================================================
+
+# 提取 Procrustes 旋转后的坐标
+df_procrustes <- data.frame(
+  sample = common_samples,
+  # Target (bacteria)
+  bact_x = procrustes_result$X[, 1],
+  bact_y = procrustes_result$X[, 2],
+  # Rotated (phage)
+  phage_x = procrustes_result$Yrot[, 1],
+  phage_y = procrustes_result$Yrot[, 2],
+  treatment_group = sample_data$treatment_group
+)
+
+# 绘制 Procrustes 图
+p_procrustes_arrow <- ggplot(df_procrustes) +
+  # 绘制连接线（箭头）
+  geom_segment(aes(x = bact_x, y = bact_y, xend = phage_x, yend = phage_y,
+                   color = treatment_group),
+               arrow = arrow(length = unit(0.15, "cm"), type = "closed"),
+               linewidth = 0.8, alpha = 0.7) +
+  # 细菌点（实心圆）
+  geom_point(aes(x = bact_x, y = bact_y, color = treatment_group),
+             shape = 16, size = 4, alpha = 0.9) +
+  # 噬菌体点（实心三角）
+  geom_point(aes(x = phage_x, y = phage_y, color = treatment_group),
+             shape = 17, size = 4, alpha = 0.9) +
+  scale_color_manual(values = group_colors, labels = group_labels) +
+  labs(
+    title = "Bacteria-Phage Community Co-variation",
+    subtitle = paste0("Procrustes: r = ", round(sqrt(1 - procrustes_result$ss), 3),
+                     ", P = ", round(procrustes_result$signif, 4)),
+    x = "Procrustes Dimension 1",
+    y = "Procrustes Dimension 2",
+    color = "Group",
+    caption = "● Bacteria (SingleM)  ▲ Phage (Lyrebird)\nShorter arrows = stronger correspondence"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 11, color = "gray30"),
+    legend.position = "bottom",
+    aspect.ratio = 1
+  ) +
+  coord_fixed()
+
+print(p_procrustes_arrow)
+
+ggsave(
+  filename = here::here("data", params$name, "31_bacteria_phage_procrustes.png"),
+  plot = p_procrustes_arrow,
+  width = 8, height = 8, dpi = 300
+)
+
+cat("✅ Procrustes 箭头图已保存: 31_bacteria_phage_procrustes.png\n")
+```
+
 ## 15. 分析小结
 
 ```{r}
