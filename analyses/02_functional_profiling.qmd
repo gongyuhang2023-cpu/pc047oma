@@ -1,44 +1,61 @@
 ---
-title: "02_functional_profiling"
-title-block-banner: true
+title: "Part 2: Functional Profiling Analysis"
+subtitle: "PC047 vCagAepitope - HUMAnN4功能谱分析"
 author:
   - name: Gong Yuhang
-date: 2026-01-02
+date: today
 toc: true
 toc-depth: 4
 number-sections: true
 code-fold: true
 code-line-numbers: true
 code-tools: true
-format: 
+format:
   html:
     embed-resources: true
     smooth-scroll: true
     page-layout: full
+    fig-width: 7.2
+    fig-height: 5
+    fig-dpi: 300
+execute:
+  warning: false
+  message: false
 reference-location: section
 citation-location: document
 params:
   name: "02_functional_profiling"
 ---
 
-**Updated: `r format(Sys.time(), '%Y-%m-%d %H:%M:%S', tz = 'CET')` CET.**
+# 研究问题 {#sec-question}
 
-The purpose of this document is:
-本文档是项目 pc047 (vCagAepitope) 的**功能分析模块**。
+> **核心问题**：CagA依赖性感染是否改变了肠道微生物的**代谢功能潜力**？
+>
+> **Functional Footprint假说**：物种组成改变（Part 1已证实）是否伴随功能层面的改变？
 
-**核心问题**：CagA依赖性感染是否改变了肠道微生物的**代谢功能潜力**？
+## 分析背景
+
+本文档是PC047项目的功能分析模块，延续Part 1的发现：
+
+| 前序分析 | 发现 | 本分析目标 |
+|---------|------|-----------|
+| Part 1 Beta多样性 | **P=0.012** 显著 | 功能是否也改变？ |
+| Part 1 Alpha多样性 | 无显著差异 | 是否存在功能冗余？ |
 
 **分析逻辑**：
-- 01文档回答了"Who is there?"（物种组成）→ 发现细菌Beta多样性显著改变
-- 本文档回答"What are they capable of?"（功能潜力）→ 验证"Functional Footprint"假说
+- Part 1回答"Who is there?"（物种组成）
+- 本文档回答"What are they capable of?"（功能潜力）
 
-**分析大纲**：
-1. Part 1: 理解HUMAnN数据 & 数据导入
-2. Part 2: 功能多样性分析（Alpha + Beta）
-3. Part 3: 通路差异丰度分析（DAA）
-4. Part 4: 驱动物种分析（哪个物种贡献了差异功能）
-5. Part 8: 2×3因子设计功能分析（验证G×E交互作用）
-6. Part 9: 分层功能分析（验证功能冗余假说）
+## 分析大纲
+
+1. **Part 1**: 数据导入与预处理
+2. **Part 2**: 功能多样性分析（Alpha + Beta）
+3. **Part 3**: 通路差异丰度分析（DAA）
+4. **Part 4**: 驱动物种分析
+5. **Part 5**: 2×3因子设计功能分析
+6. **Part 6**: 分层功能分析
+
+---
 
 ```{r}
 #| label: params
@@ -104,7 +121,7 @@ conflicts_prefer(ggplot2::annotate)
 set.seed(20261)
 ```
 
-## Part 1: 理解HUMAnN数据 & 数据导入
+# Part 1: 数据导入与预处理 {#sec-part1}
 
 ### 1.1 HUMAnN数据结构概述
 
@@ -295,7 +312,7 @@ cat("✓ TSE对象已保存:", path_target("tse_humann_pathway_ca.rds"), "\n")
 ```
 
 
-## Part 2: 功能多样性分析
+# Part 2: 功能多样性分析 {#sec-part2}
 
 **科学问题**：CagA感染是否改变了肠道微生物组的功能多样性？
 
@@ -578,7 +595,7 @@ if (humann_permanova_p < 0.05) {
 ```
 
 
-## Part 3: 通路差异丰度分析 (DAA)
+# Part 3: 通路差异丰度分析 {#sec-part3}
 
 **科学问题**：哪些具体的代谢通路在CagA感染后发生了显著变化？
 
@@ -888,7 +905,7 @@ if (sum(humann_maaslin2_summary$qval < 0.05) > 0) {
 ```
 
 
-## Part 4: 驱动物种分析 (Driver Species Analysis)
+# Part 4: 驱动物种分析 {#sec-part4}
 
 **科学问题**：哪些微生物物种贡献了差异代谢通路？
 
@@ -1678,7 +1695,7 @@ cat("3. 结合01文档的物种差异结果 → 验证因果关系\n")
 ```
 
 
-# Part 5: 基因家族(KO)差异分析
+# Part 5: KO差异分析 {#sec-part5}
 
 根据HUMAnN4分析协议：当通路水平分析未发现显著差异时，应转向更精细的基因家族(KO)水平分析。通路由多个基因组成，整体变化可能不明显，但关键限速酶或毒力基因可能显示显著差异。
 
@@ -2237,7 +2254,412 @@ cat("3. 特定代谢功能的微生物差异\n")
 ```
 
 
-# Part 6: 物种-功能整合分析 (Taxa-Function Integration)
+# Part 6: GO (Gene Ontology) 差异分析 {#sec-part6}
+
+GO分类提供更直观的功能分类（分子功能、生物过程、细胞组分）。在Pathway/KO层面未发现显著差异的情况下，尝试更精细的功能分辨率。
+
+## 6.1 读取GO数据
+
+```{r}
+#| label: part6-load-go
+
+# 读取GO unstratified数据
+go_file <- file.path(humann_data_dir, "humann4_genefamilies-step3-GO_unstratified.tsv")
+
+if (file.exists(go_file)) {
+  go_raw <- read.delim(go_file, header = TRUE, row.names = 1, check.names = FALSE)
+  cat("GO数据维度:", nrow(go_raw), "特征 ×", ncol(go_raw), "样本\n")
+
+  # 移除UNMAPPED和UNGROUPED
+  go_raw <- go_raw[!grepl("UNMAPPED|UNGROUPED", rownames(go_raw)), ]
+  cat("过滤后:", nrow(go_raw), "GO terms\n")
+} else {
+  stop("GO数据文件不存在!")
+}
+```
+
+## 6.2 GO Prevalence过滤
+
+```{r}
+#| label: part6-prevalence-filter
+
+# 匹配样本
+go_common_samples <- base::intersect(colnames(go_raw), rownames(metadata))
+cat("共同样本数:", length(go_common_samples), "\n")
+
+# 过滤
+go_filtered <- go_raw[, go_common_samples]
+go_metadata_filtered <- metadata[go_common_samples, ]
+
+# 计算prevalence (在多少比例的样本中存在)
+go_prevalence <- rowSums(go_filtered > 0) / ncol(go_filtered)
+
+# 过滤条件: 至少在10%样本中存在
+go_prev_threshold <- 0.10
+go_prevalent <- go_filtered[go_prevalence >= go_prev_threshold, ]
+
+cat(sprintf("Prevalence过滤 (>=%d%%样本): %d → %d GO terms\n",
+            go_prev_threshold * 100, nrow(go_filtered), nrow(go_prevalent)))
+```
+
+## 6.3 GO MaAsLin2差异分析
+
+```{r}
+#| label: part6-maaslin2
+#| results: hide
+
+# 准备MaAsLin2输入
+go_for_maaslin <- as.data.frame(t(go_prevalent))
+go_metadata_for_maaslin <- go_metadata_filtered[, c("treatment_group"), drop = FALSE]
+
+# 核心比较: 只保留ApcMUT样本
+go_core_samples <- rownames(go_metadata_for_maaslin)[
+  go_metadata_for_maaslin$treatment_group %in% c("ApcMUT_HpWT", "ApcMUT_HpKO")
+]
+
+go_core <- go_for_maaslin[go_core_samples, ]
+go_metadata_core <- go_metadata_for_maaslin[go_core_samples, , drop = FALSE]
+
+# 运行MaAsLin2
+maaslin_go_dir <- here::here("data", params$name, "maaslin2_go_results")
+
+fit_go <- Maaslin2(
+  input_data = go_core,
+  input_metadata = go_metadata_core,
+  output = maaslin_go_dir,
+  fixed_effects = c("treatment_group"),
+  reference = "treatment_group,ApcMUT_HpKO",
+  normalization = "TSS",
+  transform = "LOG",
+  analysis_method = "LM",
+  max_significance = 0.25,
+  min_abundance = 0.0001,
+  min_prevalence = 0.1,
+  cores = 1,
+  plot_heatmap = FALSE,
+  plot_scatter = FALSE
+)
+```
+
+## 6.4 GO差异结果
+
+```{r}
+#| label: part6-go-results
+
+go_results <- fit_go$results %>%
+  dplyr::filter(metadata == "treatment_group") %>%
+  arrange(pval)
+
+cat("\nGO差异分析结果:\n")
+cat("----------------\n")
+cat(sprintf("总检测GO terms: %d\n", nrow(go_results)))
+cat(sprintf("P < 0.05: %d\n", sum(go_results$pval < 0.05)))
+cat(sprintf("FDR < 0.25: %d\n", sum(go_results$qval < 0.25)))
+cat(sprintf("FDR < 0.05: %d\n", sum(go_results$qval < 0.05)))
+
+# 显示Top结果
+if (nrow(go_results) > 0) {
+  cat("\nTop 20 GO terms (by P-value):\n\n")
+  print(head(go_results[, c("feature", "coef", "pval", "qval")], 20))
+}
+
+# 保存结果
+write.csv(go_results,
+          file = here::here("data", params$name, "060_part6_go_daa_results.csv"),
+          row.names = FALSE)
+```
+
+---
+
+# Part 7: PFAM (蛋白质结构域) 差异分析 {#sec-part7}
+
+PFAM提供蛋白质结构域层面的功能信息，是更精细的功能注释。
+
+## 7.1 读取PFAM数据
+
+```{r}
+#| label: part7-load-pfam
+
+pfam_file <- file.path(humann_data_dir, "humann4_genefamilies-step3-PFAM_unstratified.tsv")
+
+if (file.exists(pfam_file)) {
+  pfam_raw <- read.delim(pfam_file, header = TRUE, row.names = 1, check.names = FALSE)
+  cat("PFAM数据维度:", nrow(pfam_raw), "特征 ×", ncol(pfam_raw), "样本\n")
+
+  # 移除UNMAPPED和UNGROUPED
+  pfam_raw <- pfam_raw[!grepl("UNMAPPED|UNGROUPED", rownames(pfam_raw)), ]
+  cat("过滤后:", nrow(pfam_raw), "PFAM domains\n")
+}
+```
+
+## 7.2 PFAM MaAsLin2分析
+
+```{r}
+#| label: part7-pfam-maaslin
+#| results: hide
+
+# 过滤样本
+pfam_filtered <- pfam_raw[, go_common_samples]
+
+# Prevalence过滤
+prevalence_pfam <- rowSums(pfam_filtered > 0) / ncol(pfam_filtered)
+pfam_prevalent <- pfam_filtered[prevalence_pfam >= go_prev_threshold, ]
+
+cat(sprintf("PFAM Prevalence过滤: %d → %d domains\n",
+            nrow(pfam_filtered), nrow(pfam_prevalent)))
+
+# 准备MaAsLin2
+pfam_for_maaslin <- as.data.frame(t(pfam_prevalent))
+pfam_core <- pfam_for_maaslin[go_core_samples, ]
+
+# 运行MaAsLin2
+maaslin_pfam_dir <- here::here("data", params$name, "maaslin2_pfam_results")
+
+fit_pfam <- Maaslin2(
+  input_data = pfam_core,
+  input_metadata = go_metadata_core,
+  output = maaslin_pfam_dir,
+  fixed_effects = c("treatment_group"),
+  reference = "treatment_group,ApcMUT_HpKO",
+  normalization = "TSS",
+  transform = "LOG",
+  analysis_method = "LM",
+  max_significance = 0.25,
+  min_abundance = 0.0001,
+  min_prevalence = 0.1,
+  cores = 1,
+  plot_heatmap = FALSE,
+  plot_scatter = FALSE
+)
+```
+
+## 7.3 PFAM差异结果
+
+```{r}
+#| label: part7-pfam-results
+
+pfam_results <- fit_pfam$results %>%
+  dplyr::filter(metadata == "treatment_group") %>%
+  arrange(pval)
+
+cat("\nPFAM差异分析结果:\n")
+cat("------------------\n")
+cat(sprintf("总检测PFAM domains: %d\n", nrow(pfam_results)))
+cat(sprintf("P < 0.05: %d\n", sum(pfam_results$pval < 0.05)))
+cat(sprintf("FDR < 0.25: %d\n", sum(pfam_results$qval < 0.25)))
+cat(sprintf("FDR < 0.05: %d\n", sum(pfam_results$qval < 0.05)))
+
+if (nrow(pfam_results) > 0) {
+  cat("\nTop 20 PFAM domains (by P-value):\n\n")
+  print(head(pfam_results[, c("feature", "coef", "pval", "qval")], 20))
+}
+
+write.csv(pfam_results,
+          file = here::here("data", params$name, "070_part7_pfam_daa_results.csv"),
+          row.names = FALSE)
+```
+
+---
+
+# Part 8: Gene Families 差异分析 {#sec-part8}
+
+Gene Families是最精细的功能层级，但数据量巨大需要严格过滤。
+
+## 8.1 读取Gene Families数据
+
+```{r}
+#| label: part8-load-genefamilies
+
+gf_file <- file.path(humann_data_dir, "humann4_genefamilies-step2-normalized.tsv")
+
+if (file.exists(gf_file)) {
+  # 只读取前100行看结构
+  gf_preview <- read.delim(gf_file, header = TRUE, nrows = 100, check.names = FALSE)
+  cat("Gene Families预览:\n")
+  cat("列数:", ncol(gf_preview), "\n")
+  cat("前几行特征名:\n")
+  print(head(rownames(gf_preview)))
+
+  # 完整读取（可能很慢）
+  cat("\n正在读取完整Gene Families数据（可能需要几分钟）...\n")
+  gf_raw <- read.delim(gf_file, header = TRUE, row.names = 1, check.names = FALSE)
+  cat("Gene Families原始维度:", nrow(gf_raw), "×", ncol(gf_raw), "\n")
+}
+```
+
+## 8.2 严格过滤
+
+```{r}
+#| label: part8-strict-filter
+
+# 移除stratified条目（只保留unstratified）
+unstratified_idx <- !grepl("\\|", rownames(gf_raw))
+gf_unstrat <- gf_raw[unstratified_idx, ]
+cat("移除stratified后:", nrow(gf_unstrat), "gene families\n")
+
+# 移除UNMAPPED
+gf_unstrat <- gf_unstrat[!grepl("UNMAPPED", rownames(gf_unstrat)), ]
+cat("移除UNMAPPED后:", nrow(gf_unstrat), "\n")
+
+# 过滤样本
+gf_filtered <- gf_unstrat[, go_common_samples]
+
+# 严格Prevalence过滤: 至少在20%样本中存在
+prev_strict <- 0.20
+prevalence_gf <- rowSums(gf_filtered > 0) / ncol(gf_filtered)
+gf_prevalent <- gf_filtered[prevalence_gf >= prev_strict, ]
+
+cat(sprintf("严格Prevalence过滤 (>=%d%%): %d → %d gene families\n",
+            prev_strict * 100, nrow(gf_filtered), nrow(gf_prevalent)))
+
+# 进一步过滤: 最小丰度
+min_gf_abundance <- 1  # CPM
+mean_gf_abundance <- rowMeans(gf_prevalent)
+gf_final <- gf_prevalent[mean_gf_abundance >= min_gf_abundance, ]
+
+cat(sprintf("最小丰度过滤 (>=%.1f CPM): %d gene families\n",
+            min_gf_abundance, nrow(gf_final)))
+```
+
+## 8.3 Gene Families MaAsLin2分析
+
+```{r}
+#| label: part8-gf-maaslin
+#| results: hide
+
+if (nrow(gf_final) > 0 && nrow(gf_final) < 50000) {
+  # 准备MaAsLin2
+  gf_for_maaslin <- as.data.frame(t(gf_final))
+  gf_core <- gf_for_maaslin[go_core_samples, ]
+
+  # 运行MaAsLin2
+  maaslin_gf_dir <- here::here("data", params$name, "maaslin2_genefamilies_results")
+
+  fit_gf <- Maaslin2(
+    input_data = gf_core,
+    input_metadata = go_metadata_core,
+    output = maaslin_gf_dir,
+    fixed_effects = c("treatment_group"),
+    reference = "treatment_group,ApcMUT_HpKO",
+    normalization = "TSS",
+    transform = "LOG",
+    analysis_method = "LM",
+    max_significance = 0.25,
+    min_abundance = 0.0001,
+    min_prevalence = 0.1,
+    cores = 1,
+    plot_heatmap = FALSE,
+    plot_scatter = FALSE
+  )
+
+  gf_results <- fit_gf$results %>%
+    dplyr::filter(metadata == "treatment_group") %>%
+    arrange(pval)
+
+  cat("\nGene Families差异分析结果:\n")
+  cat(sprintf("总检测: %d\n", nrow(gf_results)))
+  cat(sprintf("P < 0.05: %d\n", sum(gf_results$pval < 0.05)))
+  cat(sprintf("FDR < 0.25: %d\n", sum(gf_results$qval < 0.25)))
+
+  write.csv(gf_results,
+            file = here::here("data", params$name, "080_part8_genefamilies_daa_results.csv"),
+            row.names = FALSE)
+} else {
+  cat("Gene Families数量仍太大或为0，跳过MaAsLin2分析\n")
+  cat("建议进一步过滤或使用其他方法\n")
+}
+```
+
+---
+
+# Part 9: 全功能层级DAA汇总 {#sec-part9}
+
+整合所有功能注释层级的差异分析结果。
+
+## 9.1 多层级差异结果汇总
+
+```{r}
+#| label: part9-summary
+#| echo: false
+#| results: asis
+
+cat("\n### HUMAnN4 全功能层级差异分析汇总\n\n")
+
+cat("| 功能层级 | 检测特征数 | P<0.05 | FDR<0.25 | FDR<0.05 |\n")
+cat("|----------|------------|--------|----------|----------|\n")
+
+# Pathway结果 (来自Part 3)
+if (exists("pathway_maaslin_results")) {
+  cat(sprintf("| Pathway | %d | %d | %d | %d |\n",
+              nrow(pathway_maaslin_results),
+              sum(pathway_maaslin_results$pval < 0.05, na.rm = TRUE),
+              sum(pathway_maaslin_results$qval < 0.25, na.rm = TRUE),
+              sum(pathway_maaslin_results$qval < 0.05, na.rm = TRUE)))
+}
+
+# KO结果 (来自Part 5)
+if (exists("ko_maaslin_results")) {
+  cat(sprintf("| KO | %d | %d | %d | %d |\n",
+              nrow(ko_maaslin_results),
+              sum(ko_maaslin_results$pval < 0.05, na.rm = TRUE),
+              sum(ko_maaslin_results$qval < 0.25, na.rm = TRUE),
+              sum(ko_maaslin_results$qval < 0.05, na.rm = TRUE)))
+}
+
+# GO结果 (来自Part 6)
+if (exists("go_results")) {
+  cat(sprintf("| GO | %d | %d | %d | %d |\n",
+              nrow(go_results),
+              sum(go_results$pval < 0.05, na.rm = TRUE),
+              sum(go_results$qval < 0.25, na.rm = TRUE),
+              sum(go_results$qval < 0.05, na.rm = TRUE)))
+}
+
+# PFAM结果 (来自Part 7)
+if (exists("pfam_results")) {
+  cat(sprintf("| PFAM | %d | %d | %d | %d |\n",
+              nrow(pfam_results),
+              sum(pfam_results$pval < 0.05, na.rm = TRUE),
+              sum(pfam_results$qval < 0.25, na.rm = TRUE),
+              sum(pfam_results$qval < 0.05, na.rm = TRUE)))
+}
+
+# Gene Families结果 (来自Part 8)
+if (exists("gf_results")) {
+  cat(sprintf("| Gene Families | %d | %d | %d | %d |\n",
+              nrow(gf_results),
+              sum(gf_results$pval < 0.05, na.rm = TRUE),
+              sum(gf_results$qval < 0.25, na.rm = TRUE),
+              sum(gf_results$qval < 0.05, na.rm = TRUE)))
+}
+```
+
+## 9.2 DAA层级结论
+
+```{r}
+#| label: part9-conclusions
+#| echo: false
+#| results: asis
+
+cat("\n### Part 6-9 关键发现\n\n")
+
+cat("**功能注释层级覆盖度**\n\n")
+cat("本分析覆盖了HUMAnN4输出的全部5个功能注释层级：\n\n")
+cat("1. **Pathway** (MetaCyc): 代谢通路整体水平 - Part 3\n")
+cat("2. **KO** (KEGG Orthology): 基因功能分类 - Part 5\n")
+cat("3. **GO** (Gene Ontology): 分子功能/生物过程/细胞组分 - Part 6\n")
+cat("4. **PFAM**: 蛋白质结构域 - Part 7\n")
+cat("5. **Gene Families** (UniRef90): 最精细的基因家族 - Part 8\n\n")
+
+cat("**DAA结果解读**\n\n")
+cat("- 如果各层级均无显著差异 → 提示**功能冗余**可能存在\n")
+cat("- 如果精细层级（GO/PFAM/Gene Families）发现差异 → 提示被高层级掩盖的精细功能变化\n")
+cat("- 后续Part将进行功能冗余的定量验证\n")
+```
+
+---
+
+# Part 10: 物种-功能整合分析 {#sec-part10}
 
 虽然通路和KO水平的组间差异分析未发现显著结果，但我们可以通过**物种-功能关联分析**来探索：
 - 哪些物种与哪些功能（KO）强相关？
@@ -2245,7 +2667,7 @@ cat("3. 特定代谢功能的微生物差异\n")
 
 这种分析方法来自OMA (Orchestrating Microbiome Analysis) 框架，使用 `getCrossAssociation()` 函数。
 
-## 6.1 加载物种数据
+## 10.1 加载物种数据
 
 > **注意**: 此部分分析需要 01qmd 生成的物种丰度数据。如果文件不存在，将自动跳过 Taxa-KO 关联分析。
 
@@ -2324,7 +2746,7 @@ cat("\n保留的物种:\n")
 print(head(rownames(tse_species_filtered), 20))
 ```
 
-## 6.2 准备KO数据
+## 10.2 准备KO数据
 
 ```{r}
 #| label: prepare-ko-for-correlation
@@ -2363,7 +2785,7 @@ if (!exists("tse_ko_corepair")) {
 }
 ```
 
-## 6.3 样本对齐
+## 10.3 样本对齐
 
 ```{r}
 #| label: align-samples
@@ -2392,7 +2814,7 @@ cat("物种TSE:", nrow(tse_species_aligned), "物种 x", ncol(tse_species_aligne
 cat("KO TSE:", nrow(tse_ko_aligned), "KO x", ncol(tse_ko_aligned), "样本\n")
 ```
 
-## 6.4 计算物种-KO关联
+## 10.4 计算物种-KO关联
 
 ```{r}
 #| label: calculate-cross-association
@@ -2482,7 +2904,7 @@ cat("显著关联数 (FDR < 0.10):", n_sig_010, "\n")
 cat("显著关联数 (FDR < 0.25):", n_sig_025, "\n")
 ```
 
-## 6.5 物种-功能关联热图
+## 10.5 物种-功能关联热图
 
 ```{r}
 #| label: taxa-ko-heatmap
@@ -2598,7 +3020,7 @@ if (sum(species_with_sig) > 0 && sum(ko_with_sig) > 0) {
 }
 ```
 
-## 6.6 Top关联物种-KO对
+## 10.6 Top关联物种-KO对
 
 ```{r}
 #| label: top-associations
@@ -2651,7 +3073,7 @@ write.csv(
 cat("\n✓ 物种-KO关联表已保存\n")
 ```
 
-## 6.7 关联网络可视化
+## 10.7 关联网络可视化
 
 ```{r}
 #| label: association-network
@@ -2782,7 +3204,7 @@ if (nrow(strong_associations) >= 5) {
 }
 ```
 
-## 6.8 整合01分析的差异物种
+## 10.8 整合01分析的差异物种
 
 ```{r}
 #| label: integrate-differential-taxa
@@ -2861,7 +3283,7 @@ if (!is.null(diff_taxa) && nrow(diff_taxa) > 0) {
 }
 ```
 
-## 6.9 Part 6 小结
+## 10.9 Part 10 小结
 
 ```{r}
 #| label: part6-summary
@@ -2906,13 +3328,13 @@ cat("- 22_taxa_ko_network.png: 关联网络图\n")
 ```
 
 
-# Part 7: KO驱动物种分析 (KO Driver Species Analysis)
+# Part 11: KO驱动物种分析 {#sec-part11}
 
 Part 6发现了强物种-KO关联，现在我们需要用**stratified数据**来验证：
 - 这些强相关的KO在两组间是由哪些物种贡献的？
 - 是所有物种同步变化，还是特定"驱动物种"主导？
 
-## 7.1 加载KO Stratified数据
+## 11.1 加载KO Stratified数据
 
 ```{r}
 #| label: load-ko-stratified
@@ -2970,7 +3392,7 @@ cat("唯一KO数:", length(unique(ko_stratified_parsed$ko_id)), "\n")
 cat("唯一物种数:", length(unique(ko_stratified_parsed$species)), "\n")
 ```
 
-## 7.2 提取强相关KO的驱动物种
+## 11.2 提取强相关KO的驱动物种
 
 ```{r}
 #| label: extract-top-correlated-kos
@@ -3042,7 +3464,7 @@ if (length(available_samples) > 0) {
 }
 ```
 
-## 7.3 KO驱动物种堆叠柱状图
+## 11.3 KO驱动物种堆叠柱状图
 
 ```{r}
 #| label: ko-driver-stacked-bar
@@ -3128,7 +3550,7 @@ if (exists("ko_driver_summary") && nrow(ko_driver_summary) > 0) {
 }
 ```
 
-## 7.4 KO贡献变化热图
+## 11.4 KO贡献变化热图
 
 ```{r}
 #| label: ko-driver-heatmap
@@ -3247,7 +3669,7 @@ if (exists("ko_driver_summary") && nrow(ko_driver_summary) > 0) {
 }
 ```
 
-## 7.5 关键驱动物种识别
+## 11.5 关键驱动物种识别
 
 ```{r}
 #| label: identify-key-ko-drivers
@@ -3286,7 +3708,7 @@ if (exists("ko_driver_diff") && nrow(ko_driver_diff) > 0 &&
 }
 ```
 
-## 7.6 Part 7 小结
+## 11.6 Part 11 小结
 
 ```{r}
 #| label: part7-summary
@@ -3465,7 +3887,7 @@ cat("  - Pathway数:", nrow(tse_humann_pathway_ca_corepair), "\n")
 ```
 
 
-## Part 8: 扩展分析 - 2×3因子设计 (全27样本)
+# Part 12: 2×3因子设计扩展分析 {#sec-part12}
 
 本部分将功能分析从核心双组比较扩展为完整的2×3因子设计，使用全部27个样本：
 
@@ -3474,14 +3896,14 @@ cat("  - Pathway数:", nrow(tse_humann_pathway_ca_corepair), "\n")
 - **双因素PERMANOVA**: 检验genotype × infection交互作用
 - **betadisper**: 方差齐性检验（PERMANOVA前提假设）
 
-### 8.1 数据准备 - 全样本因子编码
+### 12.1数据准备 - 全样本因子编码
 
 ```{r}
 #| label: part8-data-prep
 #| message: false
 
 # ==============================================================================
-# Part 8: 使用全部样本进行2×3因子设计功能分析
+# 使用全部样本进行2×3因子设计功能分析
 # ==============================================================================
 
 # 1. 使用完整的pathway TSE对象（27样本）
@@ -3519,7 +3941,7 @@ if (!"relabundance" %in% assayNames(tse_pathway_full)) {
 }
 ```
 
-### 8.2 betadisper 方差齐性检验
+### 12.2betadisper 方差齐性检验
 
 ```{r}
 #| label: part8-betadisper
@@ -3593,7 +4015,7 @@ knitr::kable(betadisper_pathway_results,
              caption = "功能通路 betadisper 方差齐性检验结果 (全27样本)")
 ```
 
-### 8.3 功能Alpha多样性 - 全6组分析
+### 12.3功能Alpha多样性 - 全6组分析
 
 ```{r}
 #| label: part8-alpha-full
@@ -3704,7 +4126,7 @@ knitr::kable(alpha_stats_pathway, digits = 4,
              caption = "功能Alpha多样性统计检验结果")
 ```
 
-### 8.4 功能Beta多样性 - 2×3 PERMANOVA
+### 12.4功能Beta多样性 - 2×3 PERMANOVA
 
 ```{r}
 #| label: part8-permanova
@@ -3768,7 +4190,7 @@ knitr::kable(permanova_pathway_results, digits = 4,
              caption = "功能Beta多样性 PERMANOVA 结果 (Bray-Curtis距离)")
 ```
 
-### 8.5 功能Beta多样性 PCoA可视化
+### 12.5功能Beta多样性 PCoA可视化
 
 ```{r}
 #| label: part8-pcoa-plot
@@ -3834,7 +4256,7 @@ ggsave(here::here("data", params$name, "84_part8_pcoa_pathway_full.png"),
        plot = p8_pcoa_combined, width = 14, height = 6, dpi = 300)
 ```
 
-### 8.6 Part 8 小结
+### 12.6 Part 12 小结
 
 ```{r}
 #| label: part8-summary
@@ -3905,7 +4327,7 @@ cat("  - 通路数:", nrow(tse_pathway_full), "\n")
 ```
 
 
-## Part 9: Stratified Functional Analysis（分层功能分析）
+# Part 13: 分层功能分析 {#sec-part13}
 
 **目的**：验证功能冗余假说 — 即使功能总量不变，贡献这些功能的物种结构（Driver Species）是否发生了更替？
 
@@ -3915,7 +4337,7 @@ cat("  - 通路数:", nrow(tse_pathway_full), "\n")
 - 这提示"功能冗余"：不同物种执行相似功能
 - 本部分将揭示：**谁在执行这些功能？这些"执行者"是否在 CagA 感染后发生了更替？**
 
-### 9.1 读取分层数据
+### 13.1读取分层数据
 
 ```{r}
 #| label: part9-load-stratified
@@ -3942,7 +4364,7 @@ cat("- 总行数:", nrow(stratified_raw), "\n")
 cat("- 样本数:", length(new_sample_names), "\n")
 ```
 
-### 9.2 解析通路-物种对
+### 13.2解析通路-物种对
 
 ```{r}
 #| label: part9-parse-features
@@ -3973,7 +4395,7 @@ cat("- 物种数:", n_distinct(stratified_parsed$Species), "\n")
 cat("- 通路-物种组合:", nrow(stratified_parsed), "\n")
 ```
 
-### 9.3 添加样本分组信息
+### 13.3添加样本分组信息
 
 ```{r}
 #| label: part9-add-metadata
@@ -4003,7 +4425,7 @@ cat("- 总行数:", nrow(stratified_long), "\n")
 cat("- 匹配样本数:", n_distinct(stratified_long$sample_id), "\n")
 ```
 
-### 9.4 计算物种对通路的贡献比例
+### 13.4计算物种对通路的贡献比例
 
 ```{r}
 #| label: part9-contribution
@@ -4023,7 +4445,7 @@ cat("【物种贡献计算完成】\n")
 cat("- 有效记录数:", nrow(species_contribution), "\n")
 ```
 
-### 9.5 识别核心通路的 Driver Species 变化
+### 13.5识别核心通路的 Driver Species 变化
 
 ```{r}
 #| label: part9-driver-analysis
@@ -4062,7 +4484,7 @@ cat("- 贡献变化 > 10%的组合:", sum(driver_comparison$abs_change > 10), "\
 cat("- 贡献变化 > 20%的组合:", sum(driver_comparison$abs_change > 20), "\n")
 ```
 
-### 9.6 筛选显著的 Driver 更替事件
+### 13.6筛选显著的 Driver 更替事件
 
 ```{r}
 #| label: part9-significant-drivers
@@ -4099,7 +4521,7 @@ if (nrow(driver_by_pathway) > 0) {
 }
 ```
 
-### 9.7 可视化：功能冗余的"物种更替"
+### 13.7可视化：功能冗余的"物种更替"
 
 ```{r}
 #| label: part9-visualization
@@ -4151,7 +4573,7 @@ if (length(top_pathways) > 0) {
 }
 ```
 
-### 9.8 统计检验：Driver 更替的显著性
+### 13.8统计检验：Driver 更替的显著性
 
 ```{r}
 #| label: part9-statistics
@@ -4205,7 +4627,7 @@ if (nrow(significant_drivers) > 0) {
 }
 ```
 
-### 9.9 生物学解读总结
+### 13.9生物学解读总结
 
 ```{r}
 #| label: part9-summary
@@ -4279,21 +4701,21 @@ cat("已保存 Part 9 分析结果\n")
 ```
 
 
-## Part 10: 扩展分层成对比较 - 功能Beta多样性
+# Part 14: 分层成对比较 {#sec-part14}
 
 本部分对功能通路（Pathway）进行与物种分析（01分析Part 5）相同的9个成对比较，以验证：
 1. **功能冗余假说** - 物种层面显著的比较，功能层面是否也显著？
 2. **Apc效应在功能层面的表现** - 感染是否也"抹平"功能层面的Apc差异？
 3. **CagA功能效应的遗传背景依赖性** - G×E交互在功能层面是否存在？
 
-### 10.1 定义9个成对比较（与01分析Part 5一致）
+### 14.1定义9个成对比较（与01分析Part 5一致）
 
 ```{r}
 #| label: part10-define-comparisons
 #| message: false
 
 # ==============================================================================
-# Part 10: 功能层面的系统性分层成对比较
+# 功能层面的系统性分层成对比较
 # 与物种分析(01 Part 5)完全对应，用于验证功能冗余
 # ==============================================================================
 
@@ -4368,7 +4790,7 @@ cat("类别B (感染效应@ApcMUT): 3个比较\n")
 cat("类别C (感染效应@ApcWT): 3个比较\n\n")
 ```
 
-### 10.2 执行全部成对比较
+### 14.2执行全部成对比较
 
 ```{r}
 #| label: part10-run-comparisons
@@ -4461,7 +4883,7 @@ write.csv(part10_results,
           row.names = FALSE)
 ```
 
-### 10.3 功能冗余验证：与物种层面对比
+### 14.3功能冗余验证：与物种层面对比
 
 ```{r}
 #| label: part10-redundancy-comparison
@@ -4546,7 +4968,7 @@ if (file.exists(species_results_path)) {
 }
 ```
 
-### 10.4 CagA功能效应的遗传背景依赖性
+### 14.4CagA功能效应的遗传背景依赖性
 
 ```{r}
 #| label: part10-caga-effect
@@ -4603,7 +5025,7 @@ if (caga_effect_func$p_adj[1] < 0.05 && caga_effect_func$p_adj[2] > 0.1) {
 }
 ```
 
-### 10.5 Part 10 综合结论
+### 14.5 Part 14 综合结论
 
 ```{r}
 #| label: part10-conclusions
@@ -4670,7 +5092,7 @@ cat("  - 104_part10_summary_results.rds\n")
 ```
 
 
-## Part 11: 功能冗余指数(FRI)量化分析
+# Part 15: 功能冗余指数分析 {#sec-part15}
 
 功能冗余指数(Functional Redundancy Index, FRI)是量化生态系统功能冗余程度的指标。
 
@@ -4680,13 +5102,13 @@ cat("  - 104_part10_summary_results.rds\n")
 - FRI ≈ 1: 物种和功能多样性相当
 - FRI < 1: 功能多样性高于物种多样性 → 功能分化
 
-### 11.1 数据准备
+### 15.1数据准备
 
 ```{r}
 #| label: part11-load-data
 
 # ==============================================================================
-# Part 11: 功能冗余指数量化
+# 功能冗余指数量化
 # ==============================================================================
 
 cat("====== Part 11: 功能冗余指数(FRI)量化分析 ======\n\n")
@@ -4707,7 +5129,7 @@ common_samples <- base::intersect(colnames(tse_species), colnames(tse_pathway))
 cat("共同样本数:", length(common_samples), "\n")
 ```
 
-### 11.2 计算各样本的Shannon多样性
+### 15.2计算各样本的Shannon多样性
 
 ```{r}
 #| label: part11-calc-shannon
@@ -4754,7 +5176,7 @@ cat("\n各样本FRI值:\n")
 print(fri_df[, c("sample_id", "species_shannon", "pathway_shannon", "FRI", "treatment_group")])
 ```
 
-### 11.3 按组统计FRI
+### 15.3按组统计FRI
 
 ```{r}
 #| label: part11-group-stats
@@ -4784,7 +5206,7 @@ write.csv(fri_stats,
           row.names = FALSE)
 ```
 
-### 11.4 核心比较: CagA效应对FRI的影响
+### 15.4核心比较: CagA效应对FRI的影响
 
 ```{r}
 #| label: part11-core-comparison
@@ -4819,7 +5241,7 @@ if (nrow(fri_core) > 0 && length(unique(fri_core$treatment_group)) == 2) {
 }
 ```
 
-### 11.5 FRI可视化
+### 15.5FRI可视化
 
 ```{r}
 #| label: part11-visualization
@@ -4877,7 +5299,7 @@ ggsave(here::here("data", params$name, "112_part11_fri_scatter.png"),
        p2, width = 8, height = 6, dpi = 300)
 ```
 
-### 11.6 与文献基准对比
+### 15.6与文献基准对比
 
 ```{r}
 #| label: part11-literature-comparison
@@ -4903,7 +5325,7 @@ if (overall_fri >= 1.0 && overall_fri <= 1.5) {
 }
 ```
 
-### 11.7 Part 11 结论
+### 15.7 Part 15 结论
 
 ```{r}
 #| label: part11-conclusions

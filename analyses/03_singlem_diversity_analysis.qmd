@@ -1,9 +1,9 @@
 ---
-title: "03_singlem_diversity_analysis"
-title-block-banner: true
+title: "Part 3: SingleM/Lyrebird Diversity Analysis"
+subtitle: "PC047 vCagAepitope - OTU-based多样性分析"
 author:
   - name: Gong Yuhang
-date: 2025-01-07
+date: today
 toc: true
 toc-depth: 4
 number-sections: true
@@ -15,23 +15,37 @@ format:
     embed-resources: true
     smooth-scroll: true
     page-layout: full
+    fig-width: 7.2
+    fig-height: 5
+    fig-dpi: 300
+execute:
+  warning: false
+  message: false
 reference-location: section
 citation-location: document
 params:
   name: "03_singlem_diversity_analysis"
 ---
 
-**Updated: `r format(Sys.time(), '%Y-%m-%d %H:%M:%S', tz = 'CET')` CET.**
+# 研究问题 {#sec-question}
 
-本文档是项目 pc047 (vCagAepitope) 的 SingleM/Lyrebird 分析模块。
+> **核心问题**：使用独立方法（SingleM/Lyrebird）验证Part 1的发现是否可重复？
+>
+> **假说**：如果CagA确实重塑了微生物组，不同分类方法应得到一致结论。
 
-**分析目的**：
-使用 SingleM（细菌/古菌）和 Lyrebird（噬菌体）的 OTU-based 分类结果，评估 CagA 依赖性感染对肠道微生物组的影响。
+## 分析背景
 
-**相比 01 分析（Kraken2/Bracken）的优势**：
-1. **系统发育树**：可计算 UniFrac 距离（考虑进化关系）
-2. **新物种检测**：能识别数据库中未收录的物种
-3. **OTU分辨率**：更高的分类精度
+本文档使用SingleM（细菌/古菌）和Lyrebird（噬菌体）的OTU-based分类结果，独立验证Part 1的发现。
+
+**相比Part 1（Kraken2/Bracken）的优势**：
+
+| 特性 | Kraken2/Bracken | SingleM/Lyrebird |
+|------|----------------|------------------|
+| 系统发育 | 无 | 有（可计算UniFrac） |
+| 新物种检测 | 仅数据库已知 | 可识别新物种 |
+| 分辨率 | 物种级 | OTU级 |
+
+---
 
 ```{r}
 #| label: params
@@ -102,7 +116,7 @@ conflicts_prefer(base::intersect)
 set.seed(20261)
 ```
 
-# Part 1: SingleM 细菌/古菌分析
+# Part 1: SingleM细菌/古菌分析 {#sec-part1}
 
 ## 1. 数据导入与 TSE 构建
 
@@ -937,7 +951,7 @@ ggsave(
 ```
 
 
-# Part 2: Lyrebird 噬菌体分析
+# Part 2: Lyrebird噬菌体分析 {#sec-part2}
 
 Lyrebird 是 SingleM 框架内专门用于分析 dsDNA 噬菌体（Caudoviricetes）的模块。
 
@@ -1525,7 +1539,7 @@ ggsave(
 )
 ```
 
-# Part 3: 结果汇总
+# Part 3: 结果汇总 {#sec-part3}
 
 ## 12. 完整结果汇总表
 
@@ -2064,7 +2078,7 @@ lyrebird_unifrac_text <- if (lyrebird_unifrac_success) {
 cat("
 ## SingleM/Lyrebird 分析小结
 
-### Part 1: SingleM 细菌/古菌分析
+### Part 1: SingleM细菌/古菌分析 {#sec-part1}
 
 **数据概况**:
 - 清洗后 OTU 数: ", nrow(tse_singlem_ca_cleaned), "
@@ -2077,7 +2091,7 @@ cat("
 ", unifrac_text, "
 5. **差异丰度 (ANCOM-BC2)**: 见火山图
 
-### Part 2: Lyrebird 噬菌体分析
+### Part 2: Lyrebird噬菌体分析 {#sec-part2}
 
 **数据概况**:
 - 清洗后噬菌体 OTU 数: ", nrow(tse_lyrebird_ca_cleaned), "
@@ -2147,7 +2161,7 @@ These files have been written to the target directory, `r paste0("data/", params
 projthis::proj_dir_info(path_target(), tz = "CET")
 ```
 
-# Part 4: 扩展组间比较分析
+# Part 4: 扩展组间比较分析 {#sec-part4}
 
 ::: {.callout-note}
 ## 分析目的
@@ -2752,7 +2766,7 @@ ggsave(
 # 汇总所有扩展分析结果
 # ==============================================================================
 cat("
-## Part 4 扩展分析结果汇总
+## 4.1 扩展分析结果汇总
 
 ### 20.1 两两比较结果 (Bray-Curtis PERMANOVA)
 
@@ -2877,7 +2891,7 @@ saveRDS(
 cat("\n\n**分析结果已保存至** `data/", params$name, "/` 目录下。\n")
 ```
 
-# Part 5: 系统性成对比较扩展分析 {#part5-extended}
+# Part 5: 系统性成对比较扩展分析 {#sec-part5}
 
 本部分在Part 4的2×3析因分析基础上，进行更详细的9个成对比较，系统性检验不同实验组之间的菌群差异。
 
@@ -3202,7 +3216,7 @@ cat("\n**Part 5分析结果已保存至** `data/", params$name, "/50_part5_9comp
 ```
 
 ::: {.callout-tip}
-## Part 5 分析总结
+## 5.1 分析总结
 
 本部分完成了9个系统性成对PERMANOVA比较，与01和02分析文件的扩展分析保持一致。
 
