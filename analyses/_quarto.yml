@@ -1,13 +1,59 @@
+# PC047 vCagAepitope Quarto 配置
+# 更新于 2026-01-27
+# 由 bioinfo-project-init skill 创建
+
 project:
   type: default
   output-dir: _output
+  execute-dir: project    # 保证 here::here() 从项目根目录计算
 
 execute:
-  freeze: auto      # 源文件没改就不重新执行代码
-  warning: false    # 隐藏警告信息
+  freeze: auto            # 项目级: 源码变化才重新执行
+  cache: true             # chunk级: 启用 knitr 缓存
+  warning: false
+  message: false
+  echo: true
 
 format:
   html:
-    embed-resources: true
+    theme: cosmo
     toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
     code-fold: true
+    code-tools: true
+    code-line-numbers: true
+    embed-resources: true   # 单文件输出，便于分享
+    fig-width: 7.2          # 183mm 双栏标准
+    fig-height: 5
+    fig-dpi: 300
+    df-print: kable
+
+knitr:
+  opts_chunk:
+    comment: "#>"
+    collapse: true
+    fig.retina: 2
+    fig.align: "center"
+    out.width: "100%"
+
+# =============================================================================
+# 使用说明
+# =============================================================================
+#
+# 缓存机制:
+#   - freeze: auto → 项目级 render 时，源码不变则跳过
+#   - cache: true  → 单文件 render 时，chunk 级别缓存
+#
+# 重要:
+#   - _freeze/ 目录需要 git commit 以保持缓存有效
+#   - 单文件 render (quarto render file.qmd) 会忽略 freeze
+#   - 外部数据变化时需手动删除 _freeze/ 目录
+#
+# 常用命令:
+#   quarto render                    # 渲染整个项目
+#   quarto render file.qmd           # 渲染单个文件
+#   quarto render --cache-refresh    # 刷新缓存后渲染
+#
+# =============================================================================
