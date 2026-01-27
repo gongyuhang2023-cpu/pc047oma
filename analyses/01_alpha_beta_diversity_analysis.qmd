@@ -161,7 +161,7 @@ dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 ---
 
 # Part 1: Standard细菌多样性分析 {#sec-standard}
-## 1.导入数据并构建 TreeSE
+## 1.1 导入数据并构建TreeSE
 ```{r}
 # Step 1：定义导入文件函数
 read_bracken_standard_species <- function(path) {
@@ -237,7 +237,7 @@ tse_standard_species_ca <- tse_standard_species[, tse_standard_species$source_or
 # tse_standard_species_ca
 ```
 
-## 2.数据探索与质量控制 (QC)
+## 1.2 数据探索与质量控制
 ### 第一遍清洗(数据探索)
 ```{r}
 # 1. 自动计算质量控制指标 (Library Size)
@@ -655,8 +655,8 @@ cat("  - tse_standard_species_ca_cleaned.rds\n")
 cat("  - tse_standard_genus_ca_cleaned.rds\n")
 ```
 
-## 3.数据分析
-### 3.1 Standard Species & Genus α-diversity
+## 1.3 数据分析
+### 1.3.1 Alpha多样性分析
 ```{r}
 # 1.计算Shannon（信息熵）、Observed（观测到的物种数）
 tse_standard_species_ca_cleaned <- addAlpha(
@@ -782,7 +782,7 @@ print(paste("Shannon 指数差异 P 值:", round(standard_genus_ca_wilcox_result
 这一结果实际上为**Functional Footprint**假说提供了间接支持：
 既然多样性（Alpha）没有变化，那么问题的核心极有可能隐藏在具体的物种组成结构（Beta）或代谢功能产物的细微偏移中。
 
-### 3.2 Standard Species & Genus β-diversity
+### 1.3.2 Beta多样性分析
 ```{r}
 # ------------------------------------------------------------------------------
 # 1.计算 Bray-Curtis 距离与 PCoA 排序图 (ApcMUT_HpWT vs ApcMUT_HpKO)(species)
@@ -973,7 +973,7 @@ write.csv(
 β-diversity小结：
 CagA 对菌群的重塑效应不仅仅发生在个别物种上，而是在整个家族（属）层面都有体现
 
-### 3.3 差异丰度分析 (DAA)
+### 1.3.3 差异丰度分析 (DAA)
 ```{r}
 # tse_standard_species_ca_cleaned_corepair
 # tse_standard_genus_ca_corepair
@@ -1238,7 +1238,7 @@ ANCOM-BC 在属水平上发现 [Clostridium] (LFC=0.37) 和 [Ruminococcus] (LFC=
 虽然两种找到的 Top 菌名不相同，但它们的方向是一致的——大部分差异菌在 HpWT 中都是下调的。
 这证明了 CagA 诱导的肠道环境对原位菌群具有极强的抑制作用？？？❗
 
-### 3.4 DAA 可视化
+### 1.3.4 DAA可视化
 
 #### 3.4.1 ALDEx2 效应量可视化
 
@@ -1474,7 +1474,7 @@ tse_virus_species_ca <- tse_virus_species[, tse_virus_species$source_organ == "c
 # tse_virus_species_ca
 ```
 
-## 2.数据探索与质量控制 (QC)
+## 2.2 数据探索与质量控制
 ### 第一遍清洗(数据探索)
 ```{r}
 # ------------------------------------------------------------------------------
@@ -1679,8 +1679,8 @@ tse_virus_genus_ca_originfrom_virusspeciescacleaned <- agglomerateByRank(tse_vir
 tse_virus_genus_ca_originfrom_virusspeciescacleaned
 ```
 
-## 3.数据分析
-### 3.1 Virus Species & Genus α-diversity
+## 2.3 数据分析
+### 2.3.1 Alpha多样性分析
 ```{r}
 # ------------------------------------------------------------------------------
 # 1.计算Shannon（信息熵）、Observed（观测到的物种数）
@@ -1797,7 +1797,7 @@ print(paste("Genus水平 Shannon 指数差异 P 值:", round(virus_genus_ca_wilc
 这支持了**"Functional Footprint"假说**：变化可能在组成结构（Beta
 多样性）或特定物种丰度上，而非整体多样性
 
-### 3.2 Virus Species & Genus β-diversity
+### 2.3.2 Beta多样性分析
 ```{r}
 # ------------------------------------------------------------------------------
 # 1.计算 Bray-Curtis 距离与 PCoA 排序图 (ApcMUT_HpWT vs ApcMUT_HpKO)(species)
@@ -1941,7 +1941,7 @@ CagA主要影响细菌群落，而非病毒组。
 
 
 βdiversity无差异，可以不进行后续步骤（DAA分析）
-### 3.3 Virus 差异丰度分析 (DAA)
+### 2.3.3 差异丰度分析 (DAA)
 ```{r}
 # ------------------------------------------------------------------------------
 # 1.使用 ANCOM-BC 进行差异分析 (ApcMUT_HpWT vs ApcMUT_HpKO)(species)
@@ -2136,7 +2136,7 @@ write.csv(
 - betadisper方差齐性检验
 - 假设驱动的成对比较
 
-### 4.1 数据准备 - 全样本因子编码
+### 3.1 数据准备 - 全样本因子编码
 
 ```{r}
 #| label: part4-data-prep
@@ -2179,7 +2179,7 @@ if (!"relabundance" %in% assayNames(tse_full)) {
 }
 ```
 
-### 4.2 betadisper 方差齐性检验
+### 3.2 betadisper方差齐性检验
 
 ```{r}
 #| label: part4-betadisper
@@ -2246,7 +2246,7 @@ write.csv(betadisper_results,
 knitr::kable(betadisper_results, caption = "betadisper方差齐性检验结果")
 ```
 
-### 4.3 Alpha Diversity 扩展分析 - 全6组
+### 3.3 Alpha多样性 - 全6组
 
 ```{r}
 #| label: part4-alpha-full
@@ -2352,7 +2352,7 @@ if (requireNamespace("ARTool", quietly = TRUE)) {
 }
 ```
 
-### 4.4 Beta Diversity 扩展分析 - 全6组PCoA
+### 3.4 Beta多样性 - 全6组PCoA
 
 ```{r}
 #| label: part4-beta-pcoa-full
@@ -2401,7 +2401,7 @@ ggsave(here::here("data", params$name, "43_part4_pcoa_full_6groups.png"),
        plot = p4_4_1, width = 10, height = 8, dpi = 300)
 ```
 
-### 4.5 双因素PERMANOVA - 全6组
+### 3.5 双因素PERMANOVA - 全6组
 
 ```{r}
 #| label: part4-permanova-full
@@ -2441,7 +2441,7 @@ cat("Genotype×Infection交互: R² =", round(permanova_full$R2[3], 4),
     ", P =", permanova_full$`Pr(>F)`[3], "\n")
 ```
 
-### 4.6 双因素PERMANOVA - 2×2子集（排除Ctrl组）
+### 3.6 双因素PERMANOVA - 2×2子集
 
 ```{r}
 #| label: part4-permanova-subset
@@ -2497,7 +2497,7 @@ cat("交互作用: R² =", round(permanova_infected$R2[3], 4),
     ", P =", permanova_infected$`Pr(>F)`[3], "\n")
 ```
 
-### 4.7 假设驱动的成对比较
+### 3.7 假设驱动的成对比较
 
 ```{r}
 #| label: part4-pairwise
@@ -2574,7 +2574,7 @@ write.csv(pairwise_df,
           row.names = FALSE)
 ```
 
-### 4.8 Part 4 结果汇总
+### 3.8 结果汇总
 
 ```{r}
 #| label: part4-summary
@@ -2690,7 +2690,7 @@ saveRDS(tse_full,
 cat("\n✅ Part 4 TSE对象已保存: tse_standard_species_full_factored.rds\n")
 ```
 
-### 4.9 Part 4 英文版总结图
+### 3.9 英文版总结图
 
 ```{r}
 #| label: part4-summary-figure-english
@@ -2789,7 +2789,7 @@ if (file.exists(here::here("data", params$name, "48_part4_effect_summary.csv")) 
 2. **感染效应在不同遗传背景下的变化** - CagA效应是否依赖Apc突变？
 3. **感染梯度效应** - Ctrl → HpKO → HpWT是否存在递进变化？
 
-### 5.1 定义全部9个成对比较
+### 4.1 定义全部9个成对比较
 
 ```{r}
 #| label: part5-define-comparisons
@@ -2872,7 +2872,7 @@ cat("类别B (感染效应@ApcMUT): 3个比较\n")
 cat("类别C (感染效应@ApcWT): 3个比较\n\n")
 ```
 
-### 5.2 执行全部成对比较
+### 4.2 执行全部成对比较
 
 ```{r}
 #| label: part5-run-comparisons
@@ -2967,7 +2967,7 @@ write.csv(part5_results,
           row.names = FALSE)
 ```
 
-### 5.3 关键问题1: 感染是否"抹平"Apc效应？
+### 4.3 关键问题1: 感染是否抹平Apc效应
 
 ```{r}
 #| label: part5-apc-effect-analysis
@@ -3051,7 +3051,7 @@ if (apc_summary$p_adj[1] < 0.05 && all(apc_summary$p_adj[2:3] > 0.1)) {
 }
 ```
 
-### 5.4 关键问题2: CagA效应是否依赖遗传背景？
+### 4.4 关键问题2: CagA效应是否依赖遗传背景
 
 ```{r}
 #| label: part5-caga-effect-analysis
@@ -3143,7 +3143,7 @@ if (caga_effect_data$p_adj[1] < 0.05 && caga_effect_data$p_adj[2] > 0.1) {
 }
 ```
 
-### 5.5 关键问题3: 感染梯度效应分析
+### 4.5 关键问题3: 感染梯度效应分析
 
 ```{r}
 #| label: part5-infection-gradient
@@ -3211,7 +3211,7 @@ ggsave(here::here("data", params$name, "53_part5_infection_gradient.png"),
        plot = p5_5_1, width = 10, height = 6, dpi = 300)
 ```
 
-### 5.6 Part 5 综合可视化与结论
+### 4.6 综合可视化与结论
 
 ```{r}
 #| label: part5-comprehensive-visualization
@@ -3381,14 +3381,14 @@ cat("  - 55_part5_summary_results.rds\n")
 
 本部分对Virus数据进行与Standard数据相同的2×3因子设计分析，以比较病毒组与细菌组在实验设计下的响应差异。
 
-## 4b.1 Virus数据准备 {#sec-part4b-data-prep}
+### 5.1 数据准备
 
 ```{r}
 #| label: part4b-virus-data-prep
 #| message: false
 
 # ------------------------------------------------------------------------------
-## 5.1 Virus数据准备
+### 5.1a Virus因子编码
 # ------------------------------------------------------------------------------
 
 # 1. 使用清洗后的全样本virus数据
@@ -3420,7 +3420,7 @@ if (!"relabundance" %in% assayNames(tse_virus_full)) {
 }
 ```
 
-## 4b.2 Virus betadisper方差齐性检验 {#sec-part4b-betadisper}
+### 5.2 betadisper方差齐性检验
 
 ```{r}
 #| label: part4b-virus-betadisper
@@ -3459,7 +3459,7 @@ if (all(c(virus_disp_test_treatment$tab$`Pr(>F)`[1],
 }
 ```
 
-## 4b.3 Virus Alpha多样性 - 全6组分析 {#sec-part4b-alpha}
+### 5.3 Alpha多样性 - 全6组
 
 ```{r}
 #| label: part4b-virus-alpha-6groups
@@ -3518,7 +3518,7 @@ ggsave(here::here("data", params$name, "60_part4b_virus_alpha_6groups.png"),
        plot = p4b_alpha_combined, width = 12, height = 5, dpi = 300)
 ```
 
-## 4b.4 Virus Beta多样性 - 2×3 PERMANOVA {#sec-part4b-beta}
+### 5.4 Beta多样性 - 2×3 PERMANOVA
 
 ```{r}
 #| label: part4b-virus-beta-permanova
@@ -3559,7 +3559,7 @@ virus_permanova_results <- list(
 saveRDS(virus_permanova_results, file = here::here("data", params$name, "61_part4b_virus_permanova_results.rds"))
 ```
 
-## 4b.5 Virus Beta多样性 - PCoA可视化 {#sec-part4b-pcoa}
+### 5.5 PCoA可视化
 
 ```{r}
 #| label: part4b-virus-pcoa
@@ -3618,7 +3618,7 @@ ggsave(here::here("data", params$name, "62_part4b_virus_pcoa_6groups.png"),
        plot = p4b_pcoa, width = 10, height = 8, dpi = 300)
 ```
 
-## 4b.6 Part 4b结论 - Standard vs Virus对比 {#sec-part4b-conclusion}
+### 5.6 Part 5结论 - Standard vs Virus对比
 
 ```{r}
 #| label: part4b-conclusion
@@ -3684,7 +3684,7 @@ cat("\n\n**Part 4b分析结果已保存至** `data/", params$name, "/` 目录下
 
 本部分对Virus数据进行与Standard数据相同的9个系统性成对比较。
 
-## 5b.1 定义Virus成对比较 {#sec-part5b-define}
+### 6.1 定义成对比较
 
 ```{r}
 #| label: part5b-define-comparisons
@@ -3702,7 +3702,7 @@ cat("类别B (感染效应@ApcMUT): 3个比较\n")
 cat("类别C (感染效应@ApcWT): 3个比较\n\n")
 ```
 
-## 5b.2 执行Virus成对比较 {#sec-part5b-run}
+### 6.2 执行成对比较
 
 ```{r}
 #| label: part5b-run-comparisons
@@ -3793,7 +3793,7 @@ write.csv(part5b_virus_results,
           row.names = FALSE)
 ```
 
-## 5b.3 Standard vs Virus 成对比较对比 {#sec-part5b-comparison}
+### 6.3 Standard vs Virus对比
 
 ```{r}
 #| label: part5b-standard-virus-comparison
@@ -3836,7 +3836,7 @@ ggsave(here::here("data", params$name, "64_part5b_standard_vs_virus_comparison.p
        plot = p5b_comparison, width = 14, height = 6, dpi = 300)
 ```
 
-## 5b.4 Part 5b结论汇总 {#sec-part5b-conclusion}
+### 6.4 结论汇总
 
 ```{r}
 #| label: part5b-conclusion
