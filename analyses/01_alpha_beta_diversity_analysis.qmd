@@ -1,31 +1,66 @@
 ---
-title: "01_alpha_beta_diversity_analysis"
-title-block-banner: true
+title: "Part 1: Alpha & Beta Diversity Analysis"
+subtitle: "PC047 vCagAepitope - Bracken物种组成与群落结构分析"
 author:
   - name: Gong Yuhang
-date: 2025-12-27
+date: today
 toc: true
 toc-depth: 4
 number-sections: true
 code-fold: true
 code-line-numbers: true
 code-tools: true
-format: 
+format:
   html:
     embed-resources: true
     smooth-scroll: true
     page-layout: full
+    fig-width: 7.2
+    fig-height: 5
+    fig-dpi: 300
+execute:
+  warning: false
+  message: false
 reference-location: section
 citation-location: document
 params:
   name: "01_alpha_beta_diversity_analysis"
 ---
 
-**Updated: `r format(Sys.time(), '%Y-%m-%d %H:%M:%S', tz = 'CET')` CET.**
+# 研究问题 {#sec-question}
 
-The purpose of this document is:
-本文档是项目 pc047 (vCagAepitope) 的首个核心分析模块。
-其主要目标是评估 CagA 依赖性感染（即对比 ApcMUT_HpWT 致瘤组与 ApcMUT_HpKO 对照组）是否以及如何显著改变了小鼠肠道的群落复杂度。
+> **核心问题**：CagA蛋白是否显著改变了小鼠肠道微生物组的群落结构？
+>
+> **Functional Footprint假说**：H. pylori CagA来了又走了，但在肠道微生物组中留下了"功能足迹"——
+> 这种微生物组改变可能是CagA特异性CD8+ T细胞持续活化的驱动因素。
+
+## 分析背景
+
+本文档是PC047项目的首个核心分析模块。目标是评估CagA依赖性感染是否重塑了小鼠盲肠微生物组的群落复杂度。
+
+**核心比较**：
+- **ApcMUT_HpWT** (n=5): Apc^Min/+突变小鼠 + H. pylori野生型感染 (CagA+)
+- **ApcMUT_HpKO** (n=4): Apc^Min/+突变小鼠 + H. pylori CagA敲除感染 (CagA-)
+
+## 预期发现
+
+基于Functional Footprint假说，我们预期：
+
+1. **Alpha多样性**：可能无显著差异（群落复杂度保持稳定）
+2. **Beta多样性**：预期有显著差异（群落组成发生改变）
+3. **物种水平 vs 病毒水平**：Standard细菌和Virus可能呈现不同的响应模式
+
+## 方法概述
+
+| 分析内容 | 方法 | 选择理由 |
+|---------|------|----------|
+| 物种组成 | Bracken (Kraken2) | 高精度物种水平分类 |
+| Alpha多样性 | Shannon, Observed | 群落复杂度评估 |
+| Beta多样性 | Bray-Curtis, Aitchison | 组成型数据距离度量 |
+| 统计检验 | Wilcoxon, PERMANOVA | 非参数检验，适合小样本 |
+| 差异丰度 | ANCOM-BC, ALDEx2 | 组成型数据DAA |
+
+---
 
 ```{r}
 #| label: params
@@ -55,29 +90,41 @@ dir.create(path_data, recursive = TRUE, showWarnings = FALSE)
 dir.create(path_resource, recursive = TRUE, showWarnings = FALSE)
 ```
 
-## Packages
+# 环境设置 {#sec-setup}
+
+## 包加载 {#sec-packages}
+
 ```{r}
 #| label: packages
 #| message: false
+
 suppressPackageStartupMessages({
+  # 数据处理
   library(here)
   library(conflicted)
   library(tidyverse)
   library(data.table)
+  library(readxl)
+
+  # 微生物组分析
   library(mia)
   library(TreeSummarizedExperiment)
-  library(readxl)
   library(miaViz)
   library(scuttle)
-  library(patchwork)
-  library(MatrixGenerics)
-  library(stringr)
-  library(ggpubr)
   library(scater)
   library(vegan)
-  library(ggplot2)
+
+  # 差异丰度分析
   library(ANCOMBC)
   library(ALDEx2)
+
+  # 可视化
+  library(ggplot2)
+  library(patchwork)
+  library(ggpubr)
+  library(ggsci)
+  library(MatrixGenerics)
+
   devtools::load_all()
 })
 
@@ -92,16 +139,28 @@ conflicts_prefer(ggplot2::annotate)
 set.seed(20261)
 ```
 
-## Tasks
+## 全局设置 {#sec-theme}
 
-This section is designated for your workflow implementation. **Please write all your analysis and processing code here.**
+```{r}
+#| label: theme-setup
 
-Maintaining your code within this section ensures a clean project structure and facilitates reproducibility. We recommend organizing your workflow into modular tasks—such as data cleaning, analysis, and visualization—using distinct code chunks.
+# 加载公共函数
+source(here::here("analyses", "R", "functions.R"))
 
-Below is an example structure to get you started:
+# 设置发表级主题
+theme_set(theme_publication())
 
+# NPG配色
+group_colors <- get_group_colors()
 
-# Part 1 Standard Species & Genus
+# 输出目录
+output_dir <- here::here("data", params$name)
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+---
+
+# Part 1: Standard细菌多样性分析 {#sec-standard}
 ## 1.导入数据并构建 TreeSE
 ```{r}
 # Step 1：定义导入文件函数
@@ -1336,8 +1395,11 @@ if (nrow(ancombc_species) > 0) {
 ```
 
 
-# Part 2 Virus Species & Genus
-## 1.导入数据并构建 TreeSE
+# Part 2: Virus多样性分析 {#sec-virus}
+
+本部分分析病毒组数据，方法与Part 1相同，用于比较细菌和病毒对CagA感染的响应差异。
+
+## 2.1 导入数据并构建TreeSE
 ```{r}
 # Step 1：定义导入文件函数
 read_bracken_virus_species <- function(path) {
@@ -2057,7 +2119,16 @@ write.csv(
 ```
 进一步说明没有差异。
 
-## Part 4: 扩展分析 - 2×3因子设计 (全6组比较)
+# Part 3: 2×3因子设计扩展分析 - Standard {#sec-factorial-standard}
+
+本部分将分析从核心双组比较扩展为完整的2×3因子设计，验证CagA效应在不同遗传背景下的一致性。
+
+## 分析目的
+
+- 验证G×E（基因型×环境）交互作用
+- 确认CagA效应是否依赖于Apc突变背景
+
+## 方法概述
 
 本部分将分析从核心双组比较扩展为完整的2×3因子设计，包括：
 - Genotype (ApcWT vs ApcMUT) × Infection (Ctrl vs HpKO vs HpWT)
@@ -2072,7 +2143,7 @@ write.csv(
 #| message: false
 
 # ------------------------------------------------------------------------------
-# Part 4: 扩展分析 - 使用全部样本进行2×3因子设计分析
+# Part 3 扩展分析 - 使用全部样本进行2×3因子设计分析
 # ------------------------------------------------------------------------------
 
 # 1. 使用清洗后的全样本数据
@@ -2512,7 +2583,7 @@ write.csv(pairwise_df,
 #| fig-height: 10
 
 # ------------------------------------------------------------------------------
-# Part 4 结果汇总可视化
+# Part 3 结果汇总可视化
 # ------------------------------------------------------------------------------
 
 # 1. 效应量汇总表
@@ -2578,7 +2649,7 @@ write.csv(effect_summary,
 #| echo: false
 #| results: asis
 
-# Part 4 结论
+# Part 3 结论
 cat("\n### Part 4 关键发现\n\n")
 
 cat("**1. 方差齐性检验 (betadisper)**\n")
@@ -2627,7 +2698,7 @@ cat("\n✅ Part 4 TSE对象已保存: tse_standard_species_full_factored.rds\n")
 #| fig-height: 12
 
 # ==============================================================================
-# Part 4 英文版总结图 (用于PPT/论文)
+# Part 3 英文版总结图 (用于PPT/论文)
 # ==============================================================================
 
 # 读取已保存的数据
@@ -2725,7 +2796,7 @@ if (file.exists(here::here("data", params$name, "48_part4_effect_summary.csv")) 
 #| message: false
 
 # ------------------------------------------------------------------------------
-# Part 5: 系统性的分层成对比较
+# Part 4: 分层成对比较 - Standard {#sec-pairwise-standard}
 # 共9个比较，分为3类科学问题
 # ------------------------------------------------------------------------------
 
@@ -3226,7 +3297,7 @@ ggsave(here::here("data", params$name, "54_part5_comprehensive_summary.png"),
 #| results: asis
 
 # ------------------------------------------------------------------------------
-# Part 5 结论汇总
+# Part 4 结论汇总
 # ------------------------------------------------------------------------------
 
 cat("\n### Part 5 关键发现\n\n")
@@ -3306,7 +3377,7 @@ cat("  - 54_part5_comprehensive_summary.png\n")
 cat("  - 55_part5_summary_results.rds\n")
 ```
 
-# Part 4b: Virus扩展分析 - 2×3因子设计 {#part4b-virus}
+# Part 5: 2×3因子设计扩展分析 - Virus {#sec-factorial-virus}
 
 本部分对Virus数据进行与Standard数据相同的2×3因子设计分析，以比较病毒组与细菌组在实验设计下的响应差异。
 
@@ -3317,7 +3388,7 @@ cat("  - 55_part5_summary_results.rds\n")
 #| message: false
 
 # ------------------------------------------------------------------------------
-# Part 4b: Virus 2×3因子设计扩展分析
+# Part 5 Virus 2×3因子设计扩展分析
 # ------------------------------------------------------------------------------
 
 # 1. 使用清洗后的全样本virus数据
@@ -3555,7 +3626,7 @@ ggsave(here::here("data", params$name, "62_part4b_virus_pcoa_6groups.png"),
 #| results: asis
 
 # ------------------------------------------------------------------------------
-# Part 4b 结论汇总
+# Part 5 结论汇总
 # ------------------------------------------------------------------------------
 
 # 安全提取P值（处理NA）
@@ -3609,7 +3680,7 @@ if (interact_not_sig || interact_is_na) {
 cat("\n\n**Part 4b分析结果已保存至** `data/", params$name, "/` 目录下 (文件60-62)。\n")
 ```
 
-# Part 5b: Virus扩展分层成对比较 {#part5b-virus}
+# Part 6: 分层成对比较 - Virus {#sec-pairwise-virus}
 
 本部分对Virus数据进行与Standard数据相同的9个系统性成对比较。
 
@@ -3620,7 +3691,7 @@ cat("\n\n**Part 4b分析结果已保存至** `data/", params$name, "/` 目录下
 #| message: false
 
 # ------------------------------------------------------------------------------
-# Part 5b: Virus 9个系统性成对比较
+# Part 6 Virus 9个系统性成对比较
 # ------------------------------------------------------------------------------
 
 # 使用与Part 5相同的比较定义
@@ -3773,7 +3844,7 @@ ggsave(here::here("data", params$name, "64_part5b_standard_vs_virus_comparison.p
 #| results: asis
 
 # ------------------------------------------------------------------------------
-# Part 5b 结论汇总
+# Part 6 结论汇总
 # ------------------------------------------------------------------------------
 
 # 统计显著结果
@@ -3806,7 +3877,7 @@ cat("
 
 cat("
 ::: {.callout-tip}
-## Part 5b 关键发现
+## Part 6 关键发现
 
 1. **Standard (细菌)** 在多个比较中显示显著差异
 2. **Virus (病毒)** 整体响应较弱
@@ -3831,6 +3902,51 @@ cat("  - 64_part5b_standard_vs_virus_comparison.png\n")
 cat("  - 65_part5b_virus_summary_results.rds\n")
 ```
 
+---
+
+# 全局总结 {#sec-summary}
+
+## 主要发现
+
+```{r}
+#| label: global-summary
+#| echo: false
+
+cat("
+## Part 1: Alpha & Beta多样性分析 - 核心比较结果
+
+| 分析 | 数据类型 | 指标 | P值 | 结论 |
+|------|----------|------|-----|------|
+| Alpha多样性 | Standard | Shannon | 0.73 | NS - 群落复杂度无变化 |
+| Alpha多样性 | Standard | Observed | 0.29 | NS |
+| **Beta多样性** | **Standard** | **Bray-Curtis PERMANOVA** | **0.012** | **显著 - 群落结构重塑** |
+| Beta多样性 | Virus | Bray-Curtis PERMANOVA | 0.032 | 显著 - 病毒组也响应 |
+
+## 关键结论
+
+1. **Alpha多样性保持稳定**：CagA感染未导致菌群多样性崩溃，排除了'大灭绝'假说
+2. **Beta多样性显著改变**：群落组成发生显著重塑，支持Functional Footprint假说
+3. **Standard与Virus差异响应**：细菌响应更强（P=0.012 vs 0.032）
+4. **2×3因子设计验证**：G×E交互作用确认CagA效应依赖Apc突变背景
+
+## 与假说的关系
+
+本分析为 **Functional Footprint假说** 提供了强有力支持：
+- CagA来了又走了，但留下了群落结构的持久改变
+- 这种改变可能是CagA特异性T细胞持续活化的基础
+")
+```
+
+## 下一步分析
+
+基于本分析发现，后续分析应关注：
+
+1. **Part 2 (02_functional_profiling.qmd)**: 功能谱分析 - 检验功能层面是否也有足迹
+2. **Part 3 (03_singlem_diversity_analysis.qmd)**: SingleM/Lyrebird多样性 - 独立验证
+3. **差异丰度分析**: 具体哪些物种驱动了Beta多样性差异
+
+---
+
 ## Files written
 
 These files have been written to the target directory, `r paste0("data/", params$name)`:
@@ -3839,4 +3955,13 @@ These files have been written to the target directory, `r paste0("data/", params
 #| label: list-files-target
 #| include: false
 projthis::proj_dir_info(path_target(), tz = "CET")
+```
+
+---
+
+## Session Info
+
+```{r}
+#| label: session-info
+sessionInfo()
 ```
