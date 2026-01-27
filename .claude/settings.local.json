@@ -41,7 +41,23 @@
       "Bash(git merge:*)",
       "Bash(pip install:*)",
       "Skill(meeting-ppt-generator)",
-      "Bash(quarto render:*)"
+      "Bash(git pull:*)",
+      "Bash(\"/c/Program Files/R/R-4.4.2/bin/Rscript.exe\" analyses/scripts/plot_daa_effect_size.R)",
+      "Bash(\"/c/Program Files/R/R-4.5.2/bin/Rscript.exe\" analyses/scripts/plot_daa_effect_size.R)",
+      "Bash(\"/c/Program Files/R/R-4.5.2/bin/Rscript.exe\" analyses/scripts/plot_bacteria_phage_beta_combined.R)",
+      "Bash(\"/c/Program Files/R/R-4.5.2/bin/Rscript.exe\" analyses/scripts/plot_bacteria_phage_procrustes.R)",
+      "Bash(\"/c/Program Files/R/R-4.5.2/bin/Rscript.exe\" analyses/scripts/plot_network_modularity.R)",
+      "Bash(git reset:*)",
+      "Bash(\"/c/Program Files/R/R-4.5.2/bin/Rscript.exe\" -e \"\ntse <- readRDS\\(here::here\\(''analyses'', ''data'', ''03_singlem_diversity_analysis'', ''tse_lyrebird_corepair.rds''\\)\\)\ncat\\(''Lyrebird OTU数:'', nrow\\(tse\\), ''\\\\n''\\)\ncat\\(''样本数:'', ncol\\(tse\\), ''\\\\n''\\)\n\n# 检查prevalence\ncounts <- SummarizedExperiment::assay\\(tse, ''counts''\\)\nprev <- rowSums\\(counts > 0\\) / ncol\\(counts\\)\ncat\\(''Prevalence >= 20% 的OTU数:'', sum\\(prev >= 0.2\\), ''\\\\n''\\)\ncat\\(''Prevalence >= 50% 的OTU数:'', sum\\(prev >= 0.5\\), ''\\\\n''\\)\n\")",
+      "Bash(\"/c/Program Files/R/R-4.5.2/bin/Rscript.exe\" analyses/scripts/check_lyrebird_network.R)",
+      "Bash(\"/c/Program Files/R/R-4.5.2/bin/Rscript.exe\" analyses/scripts/plot_bacteria_phage_network_comparison.R)",
+      "Bash(\"/c/Program Files/R/R-4.5.2/bin/Rscript.exe\" analyses/scripts/plot_bacteria_phage_network_viz.R)",
+      "Bash(\"/c/Program Files/R/R-4.5.2/bin/Rscript.exe\" analyses/scripts/plot_summary_graphical_abstract.R)",
+      "Bash(\"/c/Program Files/R/R-4.5.2/bin/Rscript.exe\" analyses/scripts/create_summary_ppt.R)",
+      "Bash(\"/c/Program Files/R/R-4.5.2/bin/Rscript.exe\" analyses/scripts/plot_ancombc_results.R)",
+      "Bash(\"/c/Program Files/R/R-4.4.2/bin/Rscript.exe\" \"C:/Users/36094/Desktop/pc047oma/analyses/scripts/plot_daa_effect_size.R\")",
+      "Bash(where Rscript)",
+      "Bash(\"/c/Program Files/R/R-4.5.2/bin/Rscript.exe\" \"C:/Users/36094/Desktop/pc047oma/analyses/scripts/plot_daa_effect_size.R\")"
     ]
   }
 }
