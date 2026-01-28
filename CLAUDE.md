@@ -32,9 +32,6 @@ quarto render analyses/01_alpha_beta_diversity_analysis.qmd
 
 # Render 整个项目 (使用 freeze 缓存)
 cd analyses && quarto render
-
-# 刷新缓存后 render
-quarto render --cache-refresh
 ```
 
 ### 推荐 R 包
@@ -163,10 +160,9 @@ ggsave(here::here("data", params$name, "fig_01.png"),
 | 设置 | 值 | 作用 |
 |------|-----|------|
 | `freeze: auto` | 项目级 | 源码不变时跳过执行 |
-| `cache: true` | chunk级 | knitr 缓存加速调试 |
 | `embed-resources: true` | | 单文件输出便于分享 |
 
-> **注意**: `_freeze/` 目录需要 git commit 以保持缓存有效。
+> **注意**: `_freeze/` 目录需要 git commit 以保持缓存有效。已禁用 knitr cache（跨机器协作时易出问题）。
 
 ---
 
@@ -222,7 +218,7 @@ Search/download papers from arXiv, PubMed, bioRxiv, Semantic Scholar.
 ```
 pc047oma/
 ├── analyses/
-│   ├── _quarto.yml                       # Quarto 配置 (freeze+cache)
+│   ├── _quarto.yml                       # Quarto 配置 (freeze)
 │   ├── 01_alpha_beta_diversity_analysis.qmd  # Kraken2/Bracken
 │   ├── 02_functional_profiling.qmd           # HUMAnN4
 │   ├── 02b_extended_functional_analysis.qmd  # GO/PFAM
