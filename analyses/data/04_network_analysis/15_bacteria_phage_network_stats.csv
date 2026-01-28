@@ -1,0 +1,5 @@
+"data_type","group","group_short","nodes","edges","modularity"
+"Bacteria","Control (HpKO)","Control",50,511,0.432502556286166
+"Bacteria","CagA+ (HpWT)","CagA+",50,512,0.159538269042969
+"Phage","Control (HpKO)","Control",50,593,0.364725905661611
+"Phage","CagA+ (HpWT)","CagA+",50,381,0.255361288500355

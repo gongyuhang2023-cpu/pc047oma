@@ -756,8 +756,8 @@ calculate_zi <- function(graph, membership) {
     mean_k <- mean(module_degrees)
     sd_k <- sd(module_degrees)
 
-    # 计算Zi
-    if (sd_k > 0) {
+    # 计算Zi (处理 NA 值，当模块只有1个节点时 sd 返回 NA)
+    if (!is.na(sd_k) && sd_k > 0) {
       zi_values[i] <- (ki - mean_k) / sd_k
     } else {
       zi_values[i] <- 0
@@ -830,8 +830,8 @@ classify_nodes <- function(zi, pi, zi_threshold = 2.5, pi_threshold = 0.62) {
 if (igraph::ecount(g_all) > 0) {
   cat("====== Zi-Pi分析 ======\n\n")
 
-  # 模块检测
-  communities <- igraph::cluster_louvain(g_all)
+  # 模块检测 (使用 weights=NA 因为 cluster_louvain 不支持负权重)
+  communities <- igraph::cluster_louvain(g_all, weights = NA)
   membership <- igraph::membership(communities)
   names(membership) <- igraph::V(g_all)$name
 
