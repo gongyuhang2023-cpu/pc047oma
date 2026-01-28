@@ -1,3 +1,0 @@
-"method","threshold","n_nodes","n_edges","density"
-"Spearman",0.75,100,530,0.107070707070707
-"SparCC",0.5,50,409,0.333877551020408

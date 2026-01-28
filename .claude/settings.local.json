@@ -61,7 +61,8 @@
       "WebSearch",
       "Bash(git update-index:*)",
       "Bash(git diff:*)",
-      "Bash(git checkout:*)"
+      "Bash(git checkout:*)",
+      "Bash(git rm:*)"
     ]
   }
 }
