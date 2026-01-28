@@ -1,29 +1,51 @@
 ---
-title: "04_network_analysis"
-title-block-banner: true
-author: Gong Yuhang
-date: "2026-01-28"
+title: "Part 4: Network Analysis"
+subtitle: "PC047 vCagAepitope - Co-occurrence网络与跨域互作分析"
+author:
+  - name: Gong Yuhang
+date: today
 toc: true
 toc-depth: 4
 number-sections: true
 code-fold: true
 code-line-numbers: true
 code-tools: true
-format: 
+format:
   html:
     embed-resources: true
     smooth-scroll: true
     page-layout: full
-    theme: cosmo
+    fig-width: 7.2
+    fig-height: 5
+    fig-dpi: 300
+execute:
+  warning: false
+  message: false
 reference-location: section
 citation-location: document
 params:
   name: "04_network_analysis"
 ---
 
-**Updated: `r format(Sys.time(), '%Y-%m-%d %H:%M:%S', tz = 'CET')` CET.**
+# 研究问题 {#sec-question}
 
-The purpose of this document is ...
+> **核心问题**：CagA感染如何改变肠道微生物组的生态网络结构？
+>
+> **假说**：CagA感染会重塑物种间的共生/竞争关系，导致网络拓扑特性（如模块度、连通性）发生变化。
+
+## 分析背景
+
+Co-occurrence网络分析用于评估物种间的共生/竞争关系，以及CagA感染如何改变这些关系。
+
+**分析内容**：
+
+1. **细菌-细菌网络**：评估细菌间共生/竞争关系
+2. **细菌-噬菌体跨域网络**：宿主-噬菌体特异性互作
+3. **网络拓扑比较**：不同处理组的网络结构差异
+
+**方法**：Spearman相关性（组成型数据的稳健替代方案）
+
+---
 
 ```{r}
 #| label: params
@@ -61,46 +83,779 @@ suppressPackageStartupMessages({
   library(conflicted)
   library(tidyverse)
   library(data.table)
+  library(TreeSummarizedExperiment)
+  library(mia)
+  library(igraph)
+  library(ggraph)
+  library(corrplot)
+  library(patchwork)
   devtools::load_all()
 })
+
+# 解决命名空间冲突
+conflicts_prefer(base::setdiff)
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(dplyr::select)
+conflicts_prefer(dplyr::lag)
+conflicts_prefer(base::intersect)
+conflicts_prefer(igraph::degree)
+conflicts_prefer(igraph::betweenness)
+conflicts_prefer(igraph::closeness)
+
+set.seed(20261)
 ```
 
-## Tasks
+# Part 1: 数据准备 {#sec-part1}
 
-This section is designated for your workflow implementation. **Please write all your analysis and processing code here.**
-
-Maintaining your code within this section ensures a clean project structure and facilitates reproducibility. We recommend organizing your workflow into modular tasks—such as data cleaning, analysis, and visualization—using distinct code chunks.
-
-::: {.callout-note}
-## Example structure
-
-This is an example structure to get you started. You can modify it as per your needs.
-:::
-
-### Task 1: Data Cleaning
+## 1.1 加载细菌数据 (01分析)
 
 ```{r}
-#| label: data-cleaning
+#| label: part1-load-bacteria
 
-# Your data cleaning code here
+# 读取清洗后的细菌TSE
+tse_bacteria <- readRDS(here::here("data", "01_alpha_beta_diversity_analysis",
+                                    "tse_standard_species_ca_cleaned.rds"))
+
+cat("细菌TSE:\n")
+cat("- 物种数:", nrow(tse_bacteria), "\n")
+cat("- 样本数:", ncol(tse_bacteria), "\n")
+
+# 获取元数据
+metadata <- as.data.frame(colData(tse_bacteria))
+print(table(metadata$treatment_group))
 ```
 
-### Task 2: Data Analysis
+## 1.2 加载噬菌体数据 (03分析)
 
 ```{r}
-#| label: data-analysis
+#| label: part1-load-phage
 
-# Your analysis code here
+# 检查噬菌体TSE是否存在
+phage_file <- here::here("data", "03_singlem_diversity_analysis",
+                          "tse_lyrebird_corepair.rds")
+
+if (file.exists(phage_file)) {
+  tse_phage <- readRDS(phage_file)
+  cat("\n噬菌体TSE:\n")
+  cat("- OTU数:", nrow(tse_phage), "\n")
+  cat("- 样本数:", ncol(tse_phage), "\n")
+  has_phage <- TRUE
+} else {
+  cat("\n噬菌体TSE不存在，将只进行细菌网络分析\n")
+  has_phage <- FALSE
+}
 ```
 
-### Task 3: Data Visualization
+## 1.3 找共同样本
 
 ```{r}
-#| label: data-visualization
+#| label: part1-common-samples
 
-# Your visualization code here
+if (has_phage) {
+  common_samples <- base::intersect(colnames(tse_bacteria), colnames(tse_phage))
+  cat("细菌-噬菌体共同样本数:", length(common_samples), "\n")
+} else {
+  common_samples <- colnames(tse_bacteria)
+}
 ```
 
+# Part 2: 细菌-细菌 Co-occurrence 网络 {#sec-part2}
+
+## 2.1 准备丰度矩阵
+
+```{r}
+#| label: part2-prep-matrix
+
+# 获取counts矩阵
+bacteria_counts <- assay(tse_bacteria, "counts")
+
+# 过滤低丰度物种 (至少在20%样本中存在)
+prevalence <- rowSums(bacteria_counts > 0) / ncol(bacteria_counts)
+bacteria_filtered <- bacteria_counts[prevalence >= 0.2, ]
+
+cat("Prevalence过滤后物种数:", nrow(bacteria_filtered), "\n")
+
+# 转换为相对丰度
+bacteria_relab_all <- sweep(bacteria_filtered, 2, colSums(bacteria_filtered), "/")
+
+# 只保留Top 100高丰度物种用于网络分析
+max_species_network <- 100
+mean_abundance <- rowMeans(bacteria_relab_all)
+top_species <- names(sort(mean_abundance, decreasing = TRUE))[1:min(max_species_network, length(mean_abundance))]
+bacteria_relab <- bacteria_relab_all[top_species, , drop = FALSE]
+
+cat("网络分析使用Top", nrow(bacteria_relab), "高丰度物种\n")
+```
+
+## 2.2 计算Spearman相关性
+
+```{r}
+#| label: part2-calc-correlation
+
+# 使用Spearman相关性（对组成型数据更稳健）
+cor_matrix <- cor(t(bacteria_relab), method = "spearman")
+
+cat("相关矩阵维度:", dim(cor_matrix), "\n")
+```
+
+## 2.3 构建全样本网络
+
+```{r}
+#| label: part2-build-network
+
+# 设置相关性阈值
+cor_threshold <- 0.75
+p_threshold <- 0.05
+
+# 计算p值
+n_samples <- ncol(bacteria_relab)
+cor_to_t <- function(r, n) {
+  r * sqrt((n - 2) / (1 - r^2))
+}
+t_values <- cor_to_t(cor_matrix, n_samples)
+p_values <- 2 * pt(-abs(t_values), df = n_samples - 2)
+
+# 显著且强相关的边
+adj_matrix <- abs(cor_matrix) >= cor_threshold & p_values < p_threshold
+diag(adj_matrix) <- FALSE
+
+# 创建igraph对象
+g_all <- igraph::graph_from_adjacency_matrix(adj_matrix, mode = "undirected")
+
+# 添加边权重（相关系数）
+edge_list <- which(adj_matrix, arr.ind = TRUE)
+edge_list <- edge_list[edge_list[,1] < edge_list[,2], ]
+
+if (nrow(edge_list) > 0) {
+  igraph::E(g_all)$weight <- sapply(1:nrow(edge_list), function(i) {
+    cor_matrix[edge_list[i,1], edge_list[i,2]]
+  })
+  igraph::E(g_all)$sign <- ifelse(igraph::E(g_all)$weight > 0, "positive", "negative")
+}
+
+cat("\n全样本细菌网络:\n")
+cat("- 节点数:", igraph::vcount(g_all), "\n")
+cat("- 边数:", igraph::ecount(g_all), "\n")
+cat("- 正相关边:", sum(igraph::E(g_all)$sign == "positive", na.rm = TRUE), "\n")
+cat("- 负相关边:", sum(igraph::E(g_all)$sign == "negative", na.rm = TRUE), "\n")
+```
+
+## 2.4 按处理组构建网络
+
+```{r}
+#| label: part2-group-networks
+
+# 定义要比较的组
+groups_to_compare <- c("ApcMUT_HpKO", "ApcMUT_HpWT")
+
+network_stats <- list()
+
+for (grp in groups_to_compare) {
+  grp_samples <- rownames(metadata)[metadata$treatment_group == grp]
+
+  if (length(grp_samples) < 3) {
+    cat(sprintf("\n%s: 样本数不足，跳过\n", grp))
+    next
+  }
+
+  grp_relab <- bacteria_relab[, grp_samples]
+
+  # 过滤掉标准差为0的物种
+  row_sds <- apply(grp_relab, 1, sd)
+  grp_relab_filtered <- grp_relab[row_sds > 0, , drop = FALSE]
+
+  # 只保留Top 50高丰度物种
+  max_species <- min(nrow(grp_relab_filtered), 50)
+  mean_abundance_grp <- rowMeans(grp_relab_filtered)
+  top_species_grp <- names(sort(mean_abundance_grp, decreasing = TRUE))[1:max_species]
+  grp_relab_top <- grp_relab_filtered[top_species_grp, , drop = FALSE]
+
+  cat(sprintf("\n%s: 原始%d → 非恒定%d → Top %d高丰度物种\n",
+              grp, nrow(grp_relab), nrow(grp_relab_filtered), nrow(grp_relab_top)))
+
+  if (nrow(grp_relab_top) < 3) {
+    cat(sprintf("  物种数不足，跳过网络构建\n"))
+    next
+  }
+
+  grp_cor <- cor(t(grp_relab_top), method = "spearman")
+  grp_cor[is.na(grp_cor)] <- 0
+
+  grp_adj <- abs(grp_cor) >= cor_threshold
+  diag(grp_adj) <- FALSE
+
+  g_grp <- igraph::graph_from_adjacency_matrix(grp_adj, mode = "undirected")
+
+  # 计算网络拓扑参数
+  stats <- list(
+    group = grp,
+    n_samples = length(grp_samples),
+    n_nodes = igraph::vcount(g_grp),
+    n_edges = igraph::ecount(g_grp),
+    density = igraph::edge_density(g_grp),
+    transitivity = igraph::transitivity(g_grp, type = "global"),
+    avg_path_length = if (igraph::is_connected(g_grp)) igraph::mean_distance(g_grp) else NA,
+    modularity = if (igraph::ecount(g_grp) > 0) igraph::modularity(igraph::cluster_louvain(g_grp)) else NA
+  )
+
+  network_stats[[grp]] <- stats
+
+  cat(sprintf("\n%s 网络统计:\n", grp))
+  cat(sprintf("  节点: %d, 边: %d\n", stats$n_nodes, stats$n_edges))
+  cat(sprintf("  密度: %.4f\n", stats$density))
+  cat(sprintf("  聚类系数: %.4f\n", stats$transitivity))
+  cat(sprintf("  模块度: %.4f\n", stats$modularity))
+}
+
+# 汇总表
+network_stats_df <- bind_rows(network_stats)
+print(network_stats_df)
+
+write.csv(network_stats_df,
+          file = here::here("data", params$name, "01_bacteria_network_stats.csv"),
+          row.names = FALSE)
+```
+
+## 2.5 网络可视化
+
+### 2.5.1 全样本网络
+
+```{r}
+#| label: part2-visualization
+#| fig-width: 10
+#| fig-height: 8
+
+if (igraph::ecount(g_all) > 0 && igraph::ecount(g_all) < 500) {
+  set.seed(42)
+  layout <- igraph::layout_with_fr(g_all)
+
+  igraph::V(g_all)$size <- igraph::degree(g_all) + 3
+  igraph::E(g_all)$color <- ifelse(igraph::E(g_all)$sign == "positive", "steelblue", "tomato")
+
+  par(mfrow = c(1, 1), mar = c(1, 1, 3, 1))
+  plot(g_all,
+       layout = layout,
+       vertex.label = NA,
+       vertex.color = "lightblue",
+       edge.width = abs(igraph::E(g_all)$weight) * 2,
+       main = "细菌Co-occurrence网络\n(蓝=正相关, 红=负相关)")
+
+} else if (igraph::ecount(g_all) >= 500) {
+  cat("边数过多 (", igraph::ecount(g_all), ")，跳过全网络可视化\n")
+} else {
+  cat("网络无边，跳过可视化\n")
+}
+```
+
+### 2.5.2 分组网络对比
+
+```{r}
+#| label: part2-group-network-viz
+#| fig-width: 14
+#| fig-height: 7
+
+viz_cor_threshold <- 0.75
+
+png(here::here("data", params$name, "02_network_comparison.png"),
+    width = 1400, height = 700, res = 150)
+
+par(mfrow = c(1, 2), mar = c(2, 2, 4, 2))
+
+for (grp in groups_to_compare) {
+  grp_samples <- rownames(metadata)[metadata$treatment_group == grp]
+  grp_relab <- bacteria_relab[, grp_samples]
+
+  row_sds <- apply(grp_relab, 1, sd)
+  grp_relab_filtered <- grp_relab[row_sds > 0, , drop = FALSE]
+
+  max_species <- min(50, nrow(grp_relab_filtered))
+  mean_abundance_grp <- rowMeans(grp_relab_filtered)
+  top_species_grp <- names(sort(mean_abundance_grp, decreasing = TRUE))[1:max_species]
+  grp_relab_top <- grp_relab_filtered[top_species_grp, , drop = FALSE]
+
+  grp_cor <- cor(t(grp_relab_top), method = "spearman")
+  grp_cor[is.na(grp_cor)] <- 0
+
+  grp_adj <- abs(grp_cor) >= viz_cor_threshold
+  diag(grp_adj) <- FALSE
+
+  g_grp <- igraph::graph_from_adjacency_matrix(grp_adj, mode = "undirected")
+  mod_value <- if (igraph::ecount(g_grp) > 0) igraph::modularity(igraph::cluster_louvain(g_grp)) else 0
+
+  if (igraph::ecount(g_grp) > 0) {
+    set.seed(42)
+    layout_grp <- igraph::layout_with_fr(g_grp)
+
+    deg <- igraph::degree(g_grp)
+    igraph::V(g_grp)$size <- deg / max(deg) * 12 + 4
+
+    communities <- igraph::cluster_louvain(g_grp)
+    igraph::V(g_grp)$color <- rainbow(max(igraph::membership(communities)))[igraph::membership(communities)]
+
+    plot(g_grp,
+         layout = layout_grp,
+         vertex.label = NA,
+         edge.color = "gray60",
+         edge.width = 0.5,
+         main = sprintf("%s\nNodes: %d | Edges: %d | Modularity: %.3f",
+                       grp, igraph::vcount(g_grp), igraph::ecount(g_grp), mod_value))
+  } else {
+    plot.new()
+    text(0.5, 0.5, paste(grp, "\nNo edges at threshold", viz_cor_threshold))
+  }
+}
+
+dev.off()
+cat("网络对比图已保存: 02_network_comparison.png\n")
+```
+
+### 2.5.3 网络统计柱状图
+
+```{r}
+#| label: part2-stats-barplot
+#| fig-width: 12
+#| fig-height: 5
+
+if (nrow(network_stats_df) >= 2) {
+  stats_for_plot <- network_stats_df %>%
+    dplyr::select(group, n_nodes, n_edges, modularity) %>%
+    pivot_longer(cols = -group, names_to = "metric", values_to = "value") %>%
+    mutate(metric = factor(metric,
+                          levels = c("n_nodes", "n_edges", "modularity"),
+                          labels = c("Nodes", "Edges", "Modularity")))
+
+  ctrl_mod <- network_stats_df$modularity[network_stats_df$group == "ApcMUT_HpKO"]
+  caga_mod <- network_stats_df$modularity[network_stats_df$group == "ApcMUT_HpWT"]
+  mod_change <- round((caga_mod - ctrl_mod) / ctrl_mod * 100, 0)
+
+  p_stats <- ggplot(stats_for_plot, aes(x = metric, y = value, fill = group)) +
+    geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
+    geom_text(aes(label = round(value, 3)),
+              position = position_dodge(width = 0.8), vjust = -0.5, size = 3.5) +
+    theme_bw(base_size = 14) +
+    labs(title = "Network Topology Changes: CagA Effect",
+         subtitle = sprintf("Modularity change: %d%% (from %.3f to %.3f)",
+                           mod_change, ctrl_mod, caga_mod),
+         x = NULL, y = "Value",
+         fill = "Group") +
+    scale_fill_manual(values = c("ApcMUT_HpKO" = "#66c2a5", "ApcMUT_HpWT" = "#fc8d62"),
+                      labels = c("Control (HpKO)", "CagA+ (HpWT)")) +
+    facet_wrap(~metric, scales = "free_y", nrow = 1) +
+    theme(legend.position = "bottom")
+
+  print(p_stats)
+
+  ggsave(here::here("data", params$name, "03_network_stats_barplot.png"),
+         plot = p_stats, width = 12, height = 5, dpi = 300)
+}
+```
+
+## 2.6 Hub物种识别
+
+```{r}
+#| label: part2-hub-species
+
+if (igraph::ecount(g_all) > 0) {
+  degree_cent <- igraph::degree(g_all)
+  betweenness_cent <- igraph::betweenness(g_all, weights = NA)
+  closeness_cent <- igraph::closeness(g_all, weights = NA)
+
+  hub_df <- data.frame(
+    species = igraph::V(g_all)$name,
+    degree = degree_cent,
+    betweenness = betweenness_cent,
+    closeness = closeness_cent
+  ) %>%
+    arrange(desc(degree))
+
+  cat("\nTop 10 Hub物种 (按度排序):\n\n")
+  print(head(hub_df, 10))
+
+  write.csv(hub_df,
+            file = here::here("data", params$name, "04_bacteria_hub_species.csv"),
+            row.names = FALSE)
+}
+```
+
+# Part 3: 细菌-噬菌体跨域网络 {#sec-part3}
+
+```{r}
+#| label: part3-cross-domain
+#| eval: !expr has_phage
+
+if (has_phage) {
+  cat("\n====== 细菌-噬菌体跨域网络分析 ======\n\n")
+
+  # 获取共同样本的数据
+  bacteria_common <- bacteria_relab[, common_samples]
+  phage_counts <- assay(tse_phage[, common_samples], "counts")
+
+  # 过滤噬菌体
+  phage_prev <- rowSums(phage_counts > 0) / ncol(phage_counts)
+  phage_filtered <- phage_counts[phage_prev >= 0.2, ]
+  phage_relab <- sweep(phage_filtered, 2, colSums(phage_filtered) + 1, "/")
+
+  cat("过滤后细菌数:", nrow(bacteria_common), "\n")
+  cat("过滤后噬菌体数:", nrow(phage_filtered), "\n")
+
+  # 计算细菌-噬菌体相关性
+  cross_cor <- cor(t(bacteria_common), t(phage_relab), method = "spearman")
+
+  cat("跨域相关矩阵维度:", dim(cross_cor), "\n")
+
+  # 识别显著关联
+  cross_threshold <- 0.5
+  sig_pairs <- which(abs(cross_cor) >= cross_threshold, arr.ind = TRUE)
+
+  if (nrow(sig_pairs) > 0) {
+    cross_pairs_df <- data.frame(
+      bacteria = rownames(cross_cor)[sig_pairs[,1]],
+      phage = colnames(cross_cor)[sig_pairs[,2]],
+      correlation = sapply(1:nrow(sig_pairs), function(i) {
+        cross_cor[sig_pairs[i,1], sig_pairs[i,2]]
+      })
+    ) %>%
+      arrange(desc(abs(correlation)))
+
+    cat("\nTop 20 细菌-噬菌体关联:\n\n")
+    print(head(cross_pairs_df, 20))
+
+    write.csv(cross_pairs_df,
+              file = here::here("data", params$name, "05_bacteria_phage_associations.csv"),
+              row.names = FALSE)
+  } else {
+    cat("未发现显著的细菌-噬菌体关联 (阈值:", cross_threshold, ")\n")
+  }
+}
+```
+
+# Part 4: 细菌-噬菌体网络结构对比 {#sec-part4}
+
+## 4.1 构建分组网络
+
+```{r}
+#| label: part4-bacteria-phage-network
+#| fig-width: 9
+#| fig-height: 8
+#| eval: !expr has_phage
+
+if (has_phage) {
+  cat("\n====== Part 4: 细菌-噬菌体网络对比 ======\n")
+
+  # 定义网络构建函数
+  build_network_for_group <- function(tse, samples, top_n = 50, cor_threshold = 0.6) {
+    counts <- assay(tse, "counts")[, samples, drop = FALSE]
+    grp_relab <- sweep(counts, 2, colSums(counts) + 1, "/")
+
+    row_sds <- apply(grp_relab, 1, sd)
+    grp_relab <- grp_relab[row_sds > 0, , drop = FALSE]
+
+    n_species <- min(top_n, nrow(grp_relab))
+    mean_abund <- rowMeans(grp_relab)
+    top_species_net <- names(sort(mean_abund, decreasing = TRUE))[1:n_species]
+    grp_relab <- grp_relab[top_species_net, , drop = FALSE]
+
+    cor_mat <- cor(t(grp_relab), method = "spearman")
+    cor_mat[is.na(cor_mat)] <- 0
+
+    adj_mat <- abs(cor_mat) >= cor_threshold
+    diag(adj_mat) <- FALSE
+
+    g <- igraph::graph_from_adjacency_matrix(adj_mat, mode = "undirected")
+
+    if (igraph::ecount(g) > 0) {
+      comm <- igraph::cluster_louvain(g)
+      mod <- igraph::modularity(comm)
+    } else {
+      mod <- 0
+    }
+
+    return(list(
+      n_nodes = igraph::vcount(g),
+      n_edges = igraph::ecount(g),
+      modularity = mod,
+      graph = g
+    ))
+  }
+
+  # 获取样本分组
+  phage_meta <- as.data.frame(colData(tse_phage))
+  phage_hpko <- rownames(phage_meta)[phage_meta$treatment_group == "ApcMUT_HpKO"]
+  phage_hpwt <- rownames(phage_meta)[phage_meta$treatment_group == "ApcMUT_HpWT"]
+
+  # 构建网络
+  cat("构建细菌网络...\n")
+  bact_net_hpko <- build_network_for_group(tse_bacteria,
+                                            rownames(metadata)[metadata$treatment_group == "ApcMUT_HpKO"])
+  bact_net_hpwt <- build_network_for_group(tse_bacteria,
+                                            rownames(metadata)[metadata$treatment_group == "ApcMUT_HpWT"])
+
+  cat("构建噬菌体网络...\n")
+  phage_net_hpko <- build_network_for_group(tse_phage, phage_hpko)
+  phage_net_hpwt <- build_network_for_group(tse_phage, phage_hpwt)
+
+  # 汇总统计
+  bact_phage_stats_df <- data.frame(
+    data_type = c("Bacteria", "Bacteria", "Phage", "Phage"),
+    group = c("Control (HpKO)", "CagA+ (HpWT)", "Control (HpKO)", "CagA+ (HpWT)"),
+    group_short = c("Control", "CagA+", "Control", "CagA+"),
+    nodes = c(bact_net_hpko$n_nodes, bact_net_hpwt$n_nodes,
+              phage_net_hpko$n_nodes, phage_net_hpwt$n_nodes),
+    edges = c(bact_net_hpko$n_edges, bact_net_hpwt$n_edges,
+              phage_net_hpko$n_edges, phage_net_hpwt$n_edges),
+    modularity = c(bact_net_hpko$modularity, bact_net_hpwt$modularity,
+                   phage_net_hpko$modularity, phage_net_hpwt$modularity)
+  )
+
+  print(bact_phage_stats_df)
+
+  # 计算变化百分比
+  bact_mod_change <- (bact_net_hpwt$modularity - bact_net_hpko$modularity) /
+                     bact_net_hpko$modularity * 100
+
+  phage_mod_change <- (phage_net_hpwt$modularity - phage_net_hpko$modularity) /
+                      phage_net_hpko$modularity * 100
+
+  cat("\n细菌网络模块度变化:", round(bact_mod_change, 1), "%\n")
+  cat("噬菌体网络模块度变化:", round(phage_mod_change, 1), "%\n")
+
+  write.csv(bact_phage_stats_df,
+            file = here::here("data", params$name, "06_bacteria_phage_network_stats.csv"),
+            row.names = FALSE)
+}
+```
+
+## 4.2 模块度对比可视化
+
+```{r}
+#| label: part4-modularity-comparison
+#| fig-width: 8
+#| fig-height: 5
+#| eval: !expr has_phage
+
+if (has_phage) {
+  bact_phage_stats_df$group_short <- factor(bact_phage_stats_df$group_short,
+                                             levels = c("Control", "CagA+"))
+  bact_phage_stats_df$data_type <- factor(bact_phage_stats_df$data_type,
+                                           levels = c("Bacteria", "Phage"))
+
+  p_modularity_comparison <- ggplot(bact_phage_stats_df,
+                                     aes(x = group_short, y = modularity, fill = group_short)) +
+    geom_col(width = 0.6, alpha = 0.85) +
+    geom_text(aes(label = sprintf("%.3f", modularity)), vjust = -0.5, size = 4.5, fontface = "bold") +
+    facet_wrap(~data_type) +
+    scale_fill_manual(values = c("Control" = "#3498db", "CagA+" = "#e74c3c")) +
+    scale_y_continuous(limits = c(0, max(bact_phage_stats_df$modularity) * 1.2)) +
+    labs(
+      title = "Network Modularity: Bacteria vs Phage",
+      subtitle = sprintf("Both show change under CagA (Bacteria: %.0f%%, Phage: %.0f%%)",
+                         bact_mod_change, phage_mod_change),
+      x = NULL,
+      y = "Modularity",
+      fill = "Group"
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      plot.title = element_text(face = "bold", size = 14),
+      plot.subtitle = element_text(size = 11, color = "gray30"),
+      legend.position = "none",
+      strip.background = element_rect(fill = "gray90"),
+      strip.text = element_text(face = "bold", size = 12)
+    )
+
+  print(p_modularity_comparison)
+
+  ggsave(
+    filename = here::here("data", params$name, "07_bacteria_phage_modularity_comparison.png"),
+    plot = p_modularity_comparison,
+    width = 8, height = 5, dpi = 300
+  )
+}
+```
+
+## 4.3 2x2 网络可视化
+
+```{r}
+#| label: part4-network-2x2
+#| fig-width: 12
+#| fig-height: 12
+#| eval: !expr has_phage
+
+if (has_phage) {
+  get_colors <- function(n) {
+    if (n <= 8) {
+      return(c("#e74c3c", "#3498db", "#2ecc71", "#f39c12", "#9b59b6", "#1abc9c", "#e67e22", "#34495e")[1:n])
+    } else {
+      return(rainbow(n, s = 0.7, v = 0.8))
+    }
+  }
+
+  png(here::here("data", params$name, "08_bacteria_phage_network_2x2.png"),
+      width = 1600, height = 1600, res = 150)
+
+  par(mfrow = c(2, 2), mar = c(1, 1, 4, 1))
+
+  set.seed(42)
+
+  # --- 细菌 Control ---
+  g <- bact_net_hpko$graph
+  if (igraph::ecount(g) > 0) {
+    comm <- igraph::cluster_louvain(g)
+    igraph::V(g)$community <- igraph::membership(comm)
+    n_comm <- max(igraph::V(g)$community)
+    colors <- get_colors(n_comm)[igraph::V(g)$community]
+    igraph::V(g)$degree <- igraph::degree(g)
+    layout_bact <- igraph::layout_with_fr(g)
+
+    plot(g,
+         layout = layout_bact,
+         vertex.color = colors,
+         vertex.size = 3 + sqrt(igraph::V(g)$degree) * 2,
+         vertex.label = NA,
+         edge.color = rgb(0.5, 0.5, 0.5, 0.3),
+         edge.width = 0.5,
+         main = sprintf("Bacteria - Control (HpKO)\nEdges: %d | Modularity: %.3f",
+                        bact_net_hpko$n_edges, bact_net_hpko$modularity))
+  }
+
+  # --- 细菌 CagA+ ---
+  g <- bact_net_hpwt$graph
+  if (igraph::ecount(g) > 0) {
+    comm <- igraph::cluster_louvain(g)
+    igraph::V(g)$community <- igraph::membership(comm)
+    n_comm <- max(igraph::V(g)$community)
+    colors <- get_colors(n_comm)[igraph::V(g)$community]
+    igraph::V(g)$degree <- igraph::degree(g)
+
+    plot(g,
+         layout = layout_bact,
+         vertex.color = colors,
+         vertex.size = 3 + sqrt(igraph::V(g)$degree) * 2,
+         vertex.label = NA,
+         edge.color = rgb(0.5, 0.5, 0.5, 0.3),
+         edge.width = 0.5,
+         main = sprintf("Bacteria - CagA+ (HpWT)\nEdges: %d | Modularity: %.3f",
+                        bact_net_hpwt$n_edges, bact_net_hpwt$modularity))
+  }
+
+  set.seed(42)
+
+  # --- 噬菌体 Control ---
+  g <- phage_net_hpko$graph
+  if (igraph::ecount(g) > 0) {
+    comm <- igraph::cluster_louvain(g)
+    igraph::V(g)$community <- igraph::membership(comm)
+    n_comm <- max(igraph::V(g)$community)
+    colors <- get_colors(n_comm)[igraph::V(g)$community]
+    igraph::V(g)$degree <- igraph::degree(g)
+    layout_phage <- igraph::layout_with_fr(g)
+
+    plot(g,
+         layout = layout_phage,
+         vertex.color = colors,
+         vertex.size = 3 + sqrt(igraph::V(g)$degree) * 2,
+         vertex.label = NA,
+         edge.color = rgb(0.5, 0.5, 0.5, 0.3),
+         edge.width = 0.5,
+         main = sprintf("Phage - Control (HpKO)\nEdges: %d | Modularity: %.3f",
+                        phage_net_hpko$n_edges, phage_net_hpko$modularity))
+  }
+
+  # --- 噬菌体 CagA+ ---
+  g <- phage_net_hpwt$graph
+  if (igraph::ecount(g) > 0) {
+    comm <- igraph::cluster_louvain(g)
+    igraph::V(g)$community <- igraph::membership(comm)
+    n_comm <- max(igraph::V(g)$community)
+    colors <- get_colors(n_comm)[igraph::V(g)$community]
+    igraph::V(g)$degree <- igraph::degree(g)
+
+    plot(g,
+         layout = layout_phage,
+         vertex.color = colors,
+         vertex.size = 3 + sqrt(igraph::V(g)$degree) * 2,
+         vertex.label = NA,
+         edge.color = rgb(0.5, 0.5, 0.5, 0.3),
+         edge.width = 0.5,
+         main = sprintf("Phage - CagA+ (HpWT)\nEdges: %d | Modularity: %.3f",
+                        phage_net_hpwt$n_edges, phage_net_hpwt$modularity))
+  }
+
+  dev.off()
+
+  cat("2x2 网络对比图已保存: 08_bacteria_phage_network_2x2.png\n")
+}
+```
+
+# Part 5: 结果汇总 {#sec-part5}
+
+## 5.1 关键发现
+
+```{r}
+#| label: part5-conclusions
+#| results: asis
+
+cat("\n## 细菌网络\n\n")
+if (exists("g_all") && igraph::ecount(g_all) > 0) {
+  cat(sprintf("- 全样本网络: %d节点, %d边\n", igraph::vcount(g_all), igraph::ecount(g_all)))
+  pos_edges <- sum(igraph::E(g_all)$sign == "positive", na.rm = TRUE)
+  neg_edges <- sum(igraph::E(g_all)$sign == "negative", na.rm = TRUE)
+  cat(sprintf("- 正相关边: %d (%.1f%%), 负相关边: %d (%.1f%%)\n",
+              pos_edges, 100*pos_edges/igraph::ecount(g_all),
+              neg_edges, 100*neg_edges/igraph::ecount(g_all)))
+}
+
+if (exists("hub_df") && nrow(hub_df) > 0) {
+  cat("\n## Hub物种 (Top 5)\n\n")
+  for (i in 1:min(5, nrow(hub_df))) {
+    cat(sprintf("%d. %s (度=%d)\n", i, hub_df$species[i], hub_df$degree[i]))
+  }
+}
+
+if (exists("network_stats_df") && nrow(network_stats_df) >= 2) {
+  cat("\n## 网络拓扑比较: CagA效应\n\n")
+
+  if ("ApcMUT_HpWT" %in% network_stats_df$group && "ApcMUT_HpKO" %in% network_stats_df$group) {
+    hpwt <- network_stats_df[network_stats_df$group == "ApcMUT_HpWT", ]
+    hpko <- network_stats_df[network_stats_df$group == "ApcMUT_HpKO", ]
+
+    cat("| 指标 | HpKO (对照) | HpWT (CagA+) | 变化 |\n")
+    cat("|------|-------------|--------------|------|\n")
+    cat(sprintf("| 边数 | %d | %d | %+d |\n",
+                hpko$n_edges, hpwt$n_edges, hpwt$n_edges - hpko$n_edges))
+    cat(sprintf("| 密度 | %.4f | %.4f | %+.4f |\n",
+                hpko$density, hpwt$density, hpwt$density - hpko$density))
+    cat(sprintf("| 模块度 | %.4f | %.4f | %+.4f |\n",
+                hpko$modularity, hpwt$modularity,
+                hpwt$modularity - hpko$modularity))
+  }
+}
+
+cat("\n## 后续分析建议\n\n")
+cat("1. 使用SparCC替代Spearman获得更准确的组成型数据相关性\n")
+cat("2. 进行网络稳定性分析（bootstrap）\n")
+cat("3. 整合功能数据进行三方网络分析\n")
+```
+
+## 5.2 输出文件列表
+
+```{r}
+#| label: part5-output-files
+
+cat("\n分析结果已保存:\n")
+cat("  - 01_bacteria_network_stats.csv\n")
+cat("  - 02_network_comparison.png\n")
+cat("  - 03_network_stats_barplot.png\n")
+cat("  - 04_bacteria_hub_species.csv\n")
+if (has_phage) {
+  cat("  - 05_bacteria_phage_associations.csv\n")
+  cat("  - 06_bacteria_phage_network_stats.csv\n")
+  cat("  - 07_bacteria_phage_modularity_comparison.png\n")
+  cat("  - 08_bacteria_phage_network_2x2.png\n")
+}
+```
+
+---
 
 ## Files written
 
@@ -108,5 +863,14 @@ These files have been written to the target directory, `r paste0("data/", params
 
 ```{r}
 #| label: list-files-target
-projthis::proj_dir_info(path_target(), tz = "CET") %>% knitr::kable()
+#| include: false
+projthis::proj_dir_info(path_target(), tz = "CET")
+```
+
+```{r}
+#| label: session-info
+
+cat("\n【分析环境信息】\n")
+cat("R版本:", R.version.string, "\n")
+cat("分析日期:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
 ```
