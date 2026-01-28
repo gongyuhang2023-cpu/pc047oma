@@ -87,6 +87,8 @@ suppressPackageStartupMessages({
   library(mia)
   library(igraph)
   library(ggraph)
+  library(ggrepel)
+  library(scales)
   library(corrplot)
   library(patchwork)
   devtools::load_all()
@@ -706,6 +708,373 @@ if (igraph::ecount(g_robust) > 0) {
 }
 ```
 
+## 2.8 Keystone Species识别 (Zi-Pi分析)
+
+Zi-Pi分析通过模块内连接度(Zi)和参与系数(Pi)识别网络中的关键物种：
+
+- **Zi (Within-module degree)**: 节点在其模块内的标准化连接度
+- **Pi (Participation coefficient)**: 节点连接分布于不同模块的均匀程度
+
+根据Guimerà & Amaral (2005)的分类标准：
+
+| 类型 | Zi | Pi | 生态意义 |
+|------|----|----|----------|
+| Module hub | > 2.5 | ≤ 0.62 | 模块内关键物种 |
+| Network hub | > 2.5 | > 0.62 | 连接不同模块的超级连接者 |
+| Connector | ≤ 2.5 | > 0.62 | 跨模块连接者 |
+| Peripheral | ≤ 2.5 | ≤ 0.62 | 边缘物种 |
+
+**Keystone species** = Module hubs + Network hubs
+
+```{r}
+#| label: part2-zi-pi-functions
+
+# 定义Zi-Pi计算函数
+calculate_zi <- function(graph, membership) {
+  # Within-module degree z-score
+  nodes <- igraph::V(graph)$name
+  zi_values <- numeric(length(nodes))
+  names(zi_values) <- nodes
+
+  for (i in seq_along(nodes)) {
+    node <- nodes[i]
+    node_module <- membership[node]
+
+    # 获取同模块节点
+    module_nodes <- names(membership)[membership == node_module]
+
+    # 计算模块内度
+    neighbors <- names(igraph::neighbors(graph, node))
+    ki <- sum(neighbors %in% module_nodes)
+
+    # 计算模块内平均度和标准差
+    module_degrees <- sapply(module_nodes, function(n) {
+      n_neighbors <- names(igraph::neighbors(graph, n))
+      sum(n_neighbors %in% module_nodes)
+    })
+
+    mean_k <- mean(module_degrees)
+    sd_k <- sd(module_degrees)
+
+    # 计算Zi
+    if (sd_k > 0) {
+      zi_values[i] <- (ki - mean_k) / sd_k
+    } else {
+      zi_values[i] <- 0
+    }
+  }
+
+  return(zi_values)
+}
+
+calculate_pi <- function(graph, membership) {
+  # Participation coefficient
+  nodes <- igraph::V(graph)$name
+  pi_values <- numeric(length(nodes))
+  names(pi_values) <- nodes
+
+  modules <- unique(membership)
+
+  for (i in seq_along(nodes)) {
+    node <- nodes[i]
+    ki <- igraph::degree(graph, node)
+
+    if (ki == 0) {
+      pi_values[i] <- 0
+      next
+    }
+
+    neighbors <- names(igraph::neighbors(graph, node))
+
+    # 计算到各模块的连接比例
+    sum_squared <- 0
+    for (m in modules) {
+      module_nodes <- names(membership)[membership == m]
+      kis <- sum(neighbors %in% module_nodes)
+      sum_squared <- sum_squared + (kis / ki)^2
+    }
+
+    pi_values[i] <- 1 - sum_squared
+  }
+
+  return(pi_values)
+}
+
+# 节点分类函数
+classify_nodes <- function(zi, pi, zi_threshold = 2.5, pi_threshold = 0.62) {
+  classification <- character(length(zi))
+
+  for (i in seq_along(zi)) {
+    if (zi[i] > zi_threshold && pi[i] <= pi_threshold) {
+      classification[i] <- "Module hub"
+    } else if (zi[i] > zi_threshold && pi[i] > pi_threshold) {
+      classification[i] <- "Network hub"
+    } else if (zi[i] <= zi_threshold && pi[i] > pi_threshold) {
+      classification[i] <- "Connector"
+    } else {
+      classification[i] <- "Peripheral"
+    }
+  }
+
+  return(classification)
+}
+```
+
+### 2.8.1 全样本网络Zi-Pi分析
+
+```{r}
+#| label: part2-zi-pi-analysis
+#| fig-width: 9
+#| fig-height: 7
+
+if (igraph::ecount(g_all) > 0) {
+  cat("====== Zi-Pi分析 ======\n\n")
+
+  # 模块检测
+  communities <- igraph::cluster_louvain(g_all)
+  membership <- igraph::membership(communities)
+  names(membership) <- igraph::V(g_all)$name
+
+  cat("检测到模块数:", max(membership), "\n")
+  cat("模块度:", round(igraph::modularity(communities), 4), "\n\n")
+
+  # 计算Zi和Pi
+  zi_values <- calculate_zi(g_all, membership)
+  pi_values <- calculate_pi(g_all, membership)
+
+  # 分类节点
+  node_class <- classify_nodes(zi_values, pi_values)
+
+  # 构建结果数据框
+  zi_pi_df <- data.frame(
+    species = names(zi_values),
+    module = as.integer(membership[names(zi_values)]),
+    degree = igraph::degree(g_all)[names(zi_values)],
+    Zi = zi_values,
+    Pi = pi_values,
+    role = node_class,
+    stringsAsFactors = FALSE
+  ) %>%
+    arrange(desc(Zi))
+
+  # 统计各类节点数量
+  role_counts <- table(zi_pi_df$role)
+  cat("节点角色分布:\n")
+  print(role_counts)
+
+  # 识别keystone species
+  keystone_species <- zi_pi_df %>%
+    filter(role %in% c("Module hub", "Network hub"))
+
+  cat(sprintf("\n====== Keystone Species (n=%d) ======\n\n", nrow(keystone_species)))
+  if (nrow(keystone_species) > 0) {
+    print(keystone_species)
+  } else {
+    cat("未检测到严格定义的keystone species (Zi > 2.5)\n")
+    cat("显示Top 10高Zi值物种:\n\n")
+    print(head(zi_pi_df, 10))
+  }
+
+  # 保存结果
+  write.csv(zi_pi_df,
+            file = here::here("data", params$name, "07_zi_pi_analysis.csv"),
+            row.names = FALSE)
+}
+```
+
+### 2.8.2 Zi-Pi散点图
+
+```{r}
+#| label: part2-zi-pi-plot
+#| fig-width: 10
+#| fig-height: 8
+
+if (exists("zi_pi_df") && nrow(zi_pi_df) > 0) {
+  # 定义颜色
+  role_colors <- c(
+    "Module hub" = "#e74c3c",
+    "Network hub" = "#9b59b6",
+    "Connector" = "#3498db",
+    "Peripheral" = "#95a5a6"
+  )
+
+  # 确保role是因子并设置顺序
+  zi_pi_df$role <- factor(zi_pi_df$role,
+                          levels = c("Network hub", "Module hub", "Connector", "Peripheral"))
+
+  # 标记要显示名称的物种 (keystone + top connectors)
+  top_species_label <- zi_pi_df %>%
+    group_by(role) %>%
+    slice_max(Zi, n = 3) %>%
+    ungroup() %>%
+    filter(role != "Peripheral") %>%
+    pull(species)
+
+  zi_pi_df$label <- ifelse(zi_pi_df$species %in% top_species_label,
+                            gsub("_", " ", zi_pi_df$species), "")
+
+  # 绘制Zi-Pi图
+  p_zi_pi <- ggplot(zi_pi_df, aes(x = Pi, y = Zi, color = role, size = degree)) +
+    # 添加分类阈值线
+    geom_hline(yintercept = 2.5, linetype = "dashed", color = "gray40", linewidth = 0.8) +
+    geom_vline(xintercept = 0.62, linetype = "dashed", color = "gray40", linewidth = 0.8) +
+    # 添加区域标签
+    annotate("text", x = 0.31, y = max(zi_pi_df$Zi) * 0.95,
+             label = "Module\nhubs", color = "#e74c3c", fontface = "bold", size = 3.5) +
+    annotate("text", x = 0.81, y = max(zi_pi_df$Zi) * 0.95,
+             label = "Network\nhubs", color = "#9b59b6", fontface = "bold", size = 3.5) +
+    annotate("text", x = 0.81, y = min(zi_pi_df$Zi) + 0.5,
+             label = "Connectors", color = "#3498db", fontface = "bold", size = 3.5) +
+    annotate("text", x = 0.31, y = min(zi_pi_df$Zi) + 0.5,
+             label = "Peripherals", color = "#95a5a6", fontface = "bold", size = 3.5) +
+    # 绑制点
+    geom_point(alpha = 0.7) +
+    # 添加物种标签
+    ggrepel::geom_text_repel(
+      aes(label = label),
+      size = 2.5,
+      max.overlaps = 15,
+      segment.color = "gray60",
+      segment.size = 0.3
+    ) +
+    scale_color_manual(values = role_colors, name = "Node Role") +
+    scale_size_continuous(range = c(2, 10), name = "Degree") +
+    labs(
+      title = "Zi-Pi Plot: Keystone Species Identification",
+      subtitle = sprintf("Modules: %d | Keystone species: %d (Module hub: %d, Network hub: %d)",
+                        max(membership),
+                        sum(role_counts[c("Module hub", "Network hub")], na.rm = TRUE),
+                        role_counts["Module hub"] %||% 0,
+                        role_counts["Network hub"] %||% 0),
+      x = "Participation Coefficient (Pi)",
+      y = "Within-module Degree (Zi)"
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      plot.title = element_text(face = "bold", size = 14),
+      plot.subtitle = element_text(size = 11, color = "gray30"),
+      legend.position = "right",
+      panel.grid.minor = element_blank()
+    )
+
+  print(p_zi_pi)
+
+  ggsave(here::here("data", params$name, "08_zi_pi_plot.png"),
+         plot = p_zi_pi, width = 10, height = 8, dpi = 300)
+}
+```
+### 2.8.3 分组Zi-Pi比较
+
+```{r}
+#| label: part2-zi-pi-by-group
+#| fig-width: 12
+#| fig-height: 6
+
+# 对两个处理组分别进行Zi-Pi分析
+zi_pi_by_group <- list()
+
+for (grp in groups_to_compare) {
+  grp_samples <- rownames(metadata)[metadata$treatment_group == grp]
+
+  if (length(grp_samples) < 3) next
+
+  grp_relab <- bacteria_relab[, grp_samples]
+  row_sds <- apply(grp_relab, 1, sd)
+  grp_relab_filtered <- grp_relab[row_sds > 0, , drop = FALSE]
+
+  max_species <- min(50, nrow(grp_relab_filtered))
+  mean_abundance_grp <- rowMeans(grp_relab_filtered)
+  top_species_grp <- names(sort(mean_abundance_grp, decreasing = TRUE))[1:max_species]
+  grp_relab_top <- grp_relab_filtered[top_species_grp, , drop = FALSE]
+
+  grp_cor <- cor(t(grp_relab_top), method = "spearman")
+  grp_cor[is.na(grp_cor)] <- 0
+
+  grp_adj <- abs(grp_cor) >= cor_threshold
+  diag(grp_adj) <- FALSE
+
+  g_grp <- igraph::graph_from_adjacency_matrix(grp_adj, mode = "undirected")
+
+  if (igraph::ecount(g_grp) < 5) {
+    cat(sprintf("%s: 边数不足，跳过Zi-Pi分析\n", grp))
+    next
+  }
+
+  # 模块检测
+  comm_grp <- igraph::cluster_louvain(g_grp)
+  memb_grp <- igraph::membership(comm_grp)
+  names(memb_grp) <- igraph::V(g_grp)$name
+
+  # 计算Zi-Pi
+  zi_grp <- calculate_zi(g_grp, memb_grp)
+  pi_grp <- calculate_pi(g_grp, memb_grp)
+  class_grp <- classify_nodes(zi_grp, pi_grp)
+
+  zi_pi_by_group[[grp]] <- data.frame(
+    species = names(zi_grp),
+    group = grp,
+    Zi = zi_grp,
+    Pi = pi_grp,
+    role = class_grp,
+    stringsAsFactors = FALSE
+  )
+}
+
+# 合并并可视化
+if (length(zi_pi_by_group) == 2) {
+  zi_pi_combined <- bind_rows(zi_pi_by_group)
+  zi_pi_combined$group <- factor(zi_pi_combined$group,
+                                  levels = c("ApcMUT_HpKO", "ApcMUT_HpWT"),
+                                  labels = c("Control (HpKO)", "CagA+ (HpWT)"))
+  zi_pi_combined$role <- factor(zi_pi_combined$role,
+                                 levels = c("Network hub", "Module hub", "Connector", "Peripheral"))
+
+  # 分组Zi-Pi图
+  p_zi_pi_group <- ggplot(zi_pi_combined, aes(x = Pi, y = Zi, color = role)) +
+    geom_hline(yintercept = 2.5, linetype = "dashed", color = "gray40") +
+    geom_vline(xintercept = 0.62, linetype = "dashed", color = "gray40") +
+    geom_point(alpha = 0.7, size = 3) +
+    scale_color_manual(values = c(
+      "Module hub" = "#e74c3c",
+      "Network hub" = "#9b59b6",
+      "Connector" = "#3498db",
+      "Peripheral" = "#95a5a6"
+    ), name = "Node Role") +
+    facet_wrap(~group) +
+    labs(
+      title = "Zi-Pi Analysis by Treatment Group",
+      subtitle = "Comparing network roles between Control and CagA+ groups",
+      x = "Participation Coefficient (Pi)",
+      y = "Within-module Degree (Zi)"
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      plot.title = element_text(face = "bold"),
+      strip.background = element_rect(fill = "gray90"),
+      strip.text = element_text(face = "bold", size = 11)
+    )
+
+  print(p_zi_pi_group)
+
+  ggsave(here::here("data", params$name, "09_zi_pi_by_group.png"),
+         plot = p_zi_pi_group, width = 12, height = 6, dpi = 300)
+
+  # 角色分布对比
+  role_summary <- zi_pi_combined %>%
+    group_by(group, role) %>%
+    summarise(count = n(), .groups = "drop") %>%
+    group_by(group) %>%
+    mutate(proportion = count / sum(count))
+
+  cat("\n====== 分组角色分布对比 ======\n\n")
+  print(as.data.frame(role_summary))
+
+  write.csv(zi_pi_combined,
+            file = here::here("data", params$name, "10_zi_pi_by_group.csv"),
+            row.names = FALSE)
+}
+```
+
 # Part 3: 细菌-噬菌体跨域网络 {#sec-part3}
 
 ```{r}
@@ -750,7 +1119,7 @@ if (has_phage) {
     print(head(cross_pairs_df, 20))
 
     write.csv(cross_pairs_df,
-              file = here::here("data", params$name, "07_bacteria_phage_associations.csv"),
+              file = here::here("data", params$name, "11_bacteria_phage_associations.csv"),
               row.names = FALSE)
   } else {
     cat("未发现显著的细菌-噬菌体关联 (阈值:", cross_threshold, ")\n")
@@ -849,7 +1218,7 @@ if (has_phage) {
   cat("噬菌体网络模块度变化:", round(phage_mod_change, 1), "%\n")
 
   write.csv(bact_phage_stats_df,
-            file = here::here("data", params$name, "08_bacteria_phage_network_stats.csv"),
+            file = here::here("data", params$name, "12_bacteria_phage_network_stats.csv"),
             row.names = FALSE)
 }
 ```
@@ -895,7 +1264,7 @@ if (has_phage) {
   print(p_modularity_comparison)
 
   ggsave(
-    filename = here::here("data", params$name, "09_bacteria_phage_modularity_comparison.png"),
+    filename = here::here("data", params$name, "13_bacteria_phage_modularity_comparison.png"),
     plot = p_modularity_comparison,
     width = 8, height = 5, dpi = 300
   )
@@ -919,7 +1288,7 @@ if (has_phage) {
     }
   }
 
-  png(here::here("data", params$name, "10_bacteria_phage_network_2x2.png"),
+  png(here::here("data", params$name, "14_bacteria_phage_network_2x2.png"),
       width = 1600, height = 1600, res = 150)
 
   par(mfrow = c(2, 2), mar = c(1, 1, 4, 1))
@@ -1012,7 +1381,7 @@ if (has_phage) {
 
   dev.off()
 
-  cat("2x2 网络对比图已保存: 10_bacteria_phage_network_2x2.png\n")
+  cat("2x2 网络对比图已保存: 14_bacteria_phage_network_2x2.png\n")
 }
 ```
 
@@ -1048,6 +1417,15 @@ if (exists("g_robust") && igraph::ecount(g_robust) > 0) {
   cat(sprintf("- 边保留率: %.1f%%\n", 100 * igraph::ecount(g_robust) / max(igraph::ecount(g_all), 1)))
 }
 
+if (exists("zi_pi_df") && nrow(zi_pi_df) > 0) {
+  cat("\n## Keystone Species (Zi-Pi分析)\n\n")
+  role_counts <- table(zi_pi_df$role)
+  cat(sprintf("- Module hubs: %d\n", role_counts["Module hub"] %||% 0))
+  cat(sprintf("- Network hubs: %d\n", role_counts["Network hub"] %||% 0))
+  cat(sprintf("- Connectors: %d\n", role_counts["Connector"] %||% 0))
+  cat(sprintf("- Peripherals: %d\n", role_counts["Peripheral"] %||% 0))
+}
+
 if (exists("network_stats_df") && nrow(network_stats_df) >= 2) {
   cat("\n## 网络拓扑比较: CagA效应\n\n")
 
@@ -1069,7 +1447,7 @@ if (exists("network_stats_df") && nrow(network_stats_df) >= 2) {
 
 cat("\n## 后续分析建议\n\n")
 cat("1. 使用SparCC替代Spearman获得更准确的组成型数据相关性\n")
-cat("2. 进行Zi-Pi分析识别keystone species\n")
+cat("2. 差异网络分析（NetShift）量化组间网络重构\n")
 cat("3. 整合功能数据进行三方网络分析\n")
 ```
 
@@ -1085,11 +1463,15 @@ cat("  - 03_network_stats_barplot.png\n")
 cat("  - 04_bacteria_hub_species.csv\n")
 cat("  - 05_edge_stability_distribution.png\n")
 cat("  - 06_robust_hub_species.csv\n")
+cat("  - 07_zi_pi_analysis.csv\n")
+cat("  - 08_zi_pi_plot.png\n")
+cat("  - 09_zi_pi_by_group.png\n")
+cat("  - 10_zi_pi_by_group.csv\n")
 if (has_phage) {
-  cat("  - 07_bacteria_phage_associations.csv\n")
-  cat("  - 08_bacteria_phage_network_stats.csv\n")
-  cat("  - 09_bacteria_phage_modularity_comparison.png\n")
-  cat("  - 10_bacteria_phage_network_2x2.png\n")
+  cat("  - 11_bacteria_phage_associations.csv\n")
+  cat("  - 12_bacteria_phage_network_stats.csv\n")
+  cat("  - 13_bacteria_phage_modularity_comparison.png\n")
+  cat("  - 14_bacteria_phage_network_2x2.png\n")
 }
 ```
 
