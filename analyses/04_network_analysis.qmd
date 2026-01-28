@@ -477,6 +477,235 @@ if (igraph::ecount(g_all) > 0) {
 }
 ```
 
+## 2.7 网络稳定性分析 (Bootstrap)
+
+Bootstrap重采样评估网络边的可靠性：在多次重采样中稳定出现的边更可信。
+
+```{r}
+#| label: part2-bootstrap-stability
+#| cache: true
+
+# Bootstrap参数
+n_bootstrap <- 500  # 重采样次数（生产环境建议1000）
+stability_threshold <- 0.7  # 边稳定性阈值
+
+cat("====== Bootstrap网络稳定性分析 ======\n")
+cat("重采样次数:", n_bootstrap, "\n")
+cat("稳定性阈值:", stability_threshold, "\n\n")
+
+# 初始化边计数矩阵
+n_species <- nrow(bacteria_relab)
+edge_counts <- matrix(0, nrow = n_species, ncol = n_species,
+                      dimnames = list(rownames(bacteria_relab), rownames(bacteria_relab)))
+
+set.seed(42)
+
+# Bootstrap循环
+pb_interval <- floor(n_bootstrap / 10)
+for (b in 1:n_bootstrap) {
+  # 有放回重采样样本
+
+boot_samples <- sample(ncol(bacteria_relab), replace = TRUE)
+  boot_data <- bacteria_relab[, boot_samples]
+
+  # 计算相关性
+  boot_cor <- cor(t(boot_data), method = "spearman")
+  boot_cor[is.na(boot_cor)] <- 0
+
+  # 识别显著边
+  boot_adj <- abs(boot_cor) >= cor_threshold
+  diag(boot_adj) <- FALSE
+
+ # 累加边计数
+  edge_counts <- edge_counts + boot_adj
+
+  if (b %% pb_interval == 0) {
+    cat(sprintf("  进度: %d/%d (%.0f%%)\n", b, n_bootstrap, 100*b/n_bootstrap))
+  }
+}
+
+# 计算边稳定性
+edge_stability <- edge_counts / n_bootstrap
+
+# 统计稳定边
+stable_edges <- edge_stability >= stability_threshold
+diag(stable_edges) <- FALSE
+n_stable_edges <- sum(stable_edges) / 2  # 无向图，除以2
+
+cat("\n====== 稳定性分析结果 ======\n")
+cat("原始网络边数:", igraph::ecount(g_all), "\n")
+cat(sprintf("稳定边数 (稳定性≥%.0f%%): %d\n", stability_threshold*100, n_stable_edges))
+cat(sprintf("边保留率: %.1f%%\n", 100 * n_stable_edges / max(igraph::ecount(g_all), 1)))
+```
+
+### 2.7.1 边稳定性分布
+
+```{r}
+#| label: part2-stability-distribution
+#| fig-width: 10
+#| fig-height: 4
+
+# 提取上三角的稳定性值（排除对角线）
+upper_tri_stability <- edge_stability[upper.tri(edge_stability)]
+nonzero_stability <- upper_tri_stability[upper_tri_stability > 0]
+
+if (length(nonzero_stability) > 0) {
+  # 稳定性分布直方图
+  p_hist <- ggplot(data.frame(stability = nonzero_stability), aes(x = stability)) +
+    geom_histogram(binwidth = 0.05, fill = "steelblue", color = "white", alpha = 0.8) +
+    geom_vline(xintercept = stability_threshold, color = "red", linetype = "dashed", linewidth = 1) +
+    annotate("text", x = stability_threshold + 0.05, y = Inf, vjust = 2,
+             label = sprintf("Threshold: %.0f%%", stability_threshold*100),
+             color = "red", fontface = "bold") +
+    scale_x_continuous(labels = scales::percent, limits = c(0, 1)) +
+    labs(
+      title = "Edge Stability Distribution (Bootstrap)",
+      subtitle = sprintf("%d bootstrap iterations | %d stable edges (≥%.0f%%)",
+                        n_bootstrap, n_stable_edges, stability_threshold*100),
+      x = "Edge Stability (proportion of bootstrap samples)",
+      y = "Count"
+    ) +
+    theme_bw(base_size = 12) +
+    theme(plot.title = element_text(face = "bold"))
+
+  # 稳定性分类饼图
+  stability_categories <- cut(nonzero_stability,
+                              breaks = c(0, 0.3, 0.5, 0.7, 0.9, 1.0),
+                              labels = c("<30%", "30-50%", "50-70%", "70-90%", ">90%"),
+                              include.lowest = TRUE)
+
+  pie_data <- as.data.frame(table(stability_categories)) %>%
+    mutate(prop = Freq / sum(Freq),
+           label = sprintf("%s\n(n=%d)", stability_categories, Freq))
+
+  p_pie <- ggplot(pie_data, aes(x = "", y = Freq, fill = stability_categories)) +
+    geom_bar(stat = "identity", width = 1) +
+    coord_polar("y") +
+    scale_fill_manual(values = c("<30%" = "#d73027", "30-50%" = "#fc8d59",
+                                  "50-70%" = "#fee090", "70-90%" = "#91cf60",
+                                  ">90%" = "#1a9850"),
+                      name = "Stability") +
+    labs(title = "Edge Stability Categories") +
+    theme_void(base_size = 12) +
+    theme(plot.title = element_text(face = "bold", hjust = 0.5),
+          legend.position = "right")
+
+  print(p_hist + p_pie + plot_layout(widths = c(2, 1)))
+
+  ggsave(here::here("data", params$name, "05_edge_stability_distribution.png"),
+         plot = p_hist + p_pie + plot_layout(widths = c(2, 1)),
+         width = 10, height = 4, dpi = 300)
+}
+```
+
+### 2.7.2 构建稳健网络
+
+```{r}
+#| label: part2-robust-network
+#| fig-width: 8
+#| fig-height: 7
+
+# 基于稳定性构建稳健网络
+g_robust <- igraph::graph_from_adjacency_matrix(stable_edges, mode = "undirected")
+
+# 添加稳定性作为边权重
+if (igraph::ecount(g_robust) > 0) {
+  edge_list_robust <- igraph::as_edgelist(g_robust)
+  edge_stab_values <- sapply(1:nrow(edge_list_robust), function(i) {
+    edge_stability[edge_list_robust[i,1], edge_list_robust[i,2]]
+  })
+  igraph::E(g_robust)$stability <- edge_stab_values
+
+  # 添加原始相关系数
+  edge_cor_values <- sapply(1:nrow(edge_list_robust), function(i) {
+    cor_matrix[edge_list_robust[i,1], edge_list_robust[i,2]]
+  })
+  igraph::E(g_robust)$correlation <- edge_cor_values
+  igraph::E(g_robust)$sign <- ifelse(edge_cor_values > 0, "positive", "negative")
+}
+
+cat("\n====== 稳健网络统计 ======\n")
+cat("原始网络: 节点", igraph::vcount(g_all), ", 边", igraph::ecount(g_all), "\n")
+cat("稳健网络: 节点", igraph::vcount(g_robust), ", 边", igraph::ecount(g_robust), "\n")
+
+if (igraph::ecount(g_robust) > 0) {
+  cat("\n稳健网络边的稳定性:\n")
+  cat("  平均:", round(mean(igraph::E(g_robust)$stability), 3), "\n")
+  cat("  最小:", round(min(igraph::E(g_robust)$stability), 3), "\n")
+  cat("  最大:", round(max(igraph::E(g_robust)$stability), 3), "\n")
+
+  # 可视化稳健网络
+  if (igraph::ecount(g_robust) < 300) {
+    set.seed(42)
+    layout_robust <- igraph::layout_with_fr(g_robust)
+
+    # 节点大小 = 度
+    igraph::V(g_robust)$size <- igraph::degree(g_robust) + 3
+
+    # 边颜色 = 正/负相关
+    igraph::E(g_robust)$color <- ifelse(igraph::E(g_robust)$sign == "positive",
+                                         "#3498db", "#e74c3c")
+
+    # 边宽度 = 稳定性
+    igraph::E(g_robust)$width <- igraph::E(g_robust)$stability * 3
+
+    par(mar = c(1, 1, 3, 1))
+    plot(g_robust,
+         layout = layout_robust,
+         vertex.label = NA,
+         vertex.color = "lightgray",
+         main = sprintf("Robust Network (stability ≥ %.0f%%)\nNodes: %d | Edges: %d",
+                       stability_threshold*100,
+                       igraph::vcount(g_robust),
+                       igraph::ecount(g_robust)))
+    legend("bottomright",
+           legend = c("Positive correlation", "Negative correlation"),
+           col = c("#3498db", "#e74c3c"),
+           lwd = 2, bty = "n", cex = 0.8)
+
+  } else {
+    cat("\n边数过多，跳过可视化\n")
+  }
+}
+```
+
+### 2.7.3 稳健网络Hub物种
+
+```{r}
+#| label: part2-robust-hub-species
+
+if (igraph::ecount(g_robust) > 0) {
+  # 计算稳健网络的中心性
+  robust_degree <- igraph::degree(g_robust)
+  robust_betweenness <- igraph::betweenness(g_robust, weights = NA)
+
+  robust_hub_df <- data.frame(
+    species = names(robust_degree),
+    degree = robust_degree,
+    betweenness = robust_betweenness
+  ) %>%
+    filter(degree > 0) %>%
+    arrange(desc(degree))
+
+  cat("\n====== 稳健网络Top 10 Hub物种 ======\n\n")
+  print(head(robust_hub_df, 10))
+
+  # 与原始网络Hub比较
+  if (exists("hub_df")) {
+    original_top10 <- head(hub_df$species, 10)
+    robust_top10 <- head(robust_hub_df$species, 10)
+    overlap <- length(base::intersect(original_top10, robust_top10))
+
+    cat(sprintf("\n原始网络 vs 稳健网络 Top10 Hub重叠: %d/10 (%.0f%%)\n",
+                overlap, overlap * 10))
+  }
+
+  write.csv(robust_hub_df,
+            file = here::here("data", params$name, "06_robust_hub_species.csv"),
+            row.names = FALSE)
+}
+```
+
 # Part 3: 细菌-噬菌体跨域网络 {#sec-part3}
 
 ```{r}
@@ -521,7 +750,7 @@ if (has_phage) {
     print(head(cross_pairs_df, 20))
 
     write.csv(cross_pairs_df,
-              file = here::here("data", params$name, "05_bacteria_phage_associations.csv"),
+              file = here::here("data", params$name, "07_bacteria_phage_associations.csv"),
               row.names = FALSE)
   } else {
     cat("未发现显著的细菌-噬菌体关联 (阈值:", cross_threshold, ")\n")
@@ -620,7 +849,7 @@ if (has_phage) {
   cat("噬菌体网络模块度变化:", round(phage_mod_change, 1), "%\n")
 
   write.csv(bact_phage_stats_df,
-            file = here::here("data", params$name, "06_bacteria_phage_network_stats.csv"),
+            file = here::here("data", params$name, "08_bacteria_phage_network_stats.csv"),
             row.names = FALSE)
 }
 ```
@@ -666,7 +895,7 @@ if (has_phage) {
   print(p_modularity_comparison)
 
   ggsave(
-    filename = here::here("data", params$name, "07_bacteria_phage_modularity_comparison.png"),
+    filename = here::here("data", params$name, "09_bacteria_phage_modularity_comparison.png"),
     plot = p_modularity_comparison,
     width = 8, height = 5, dpi = 300
   )
@@ -690,7 +919,7 @@ if (has_phage) {
     }
   }
 
-  png(here::here("data", params$name, "08_bacteria_phage_network_2x2.png"),
+  png(here::here("data", params$name, "10_bacteria_phage_network_2x2.png"),
       width = 1600, height = 1600, res = 150)
 
   par(mfrow = c(2, 2), mar = c(1, 1, 4, 1))
@@ -783,7 +1012,7 @@ if (has_phage) {
 
   dev.off()
 
-  cat("2x2 网络对比图已保存: 08_bacteria_phage_network_2x2.png\n")
+  cat("2x2 网络对比图已保存: 10_bacteria_phage_network_2x2.png\n")
 }
 ```
 
@@ -812,6 +1041,13 @@ if (exists("hub_df") && nrow(hub_df) > 0) {
   }
 }
 
+if (exists("g_robust") && igraph::ecount(g_robust) > 0) {
+  cat("\n## Bootstrap稳健网络\n\n")
+  cat(sprintf("- 稳定性阈值: %.0f%%\n", stability_threshold * 100))
+  cat(sprintf("- 稳健边数: %d (原始边数: %d)\n", igraph::ecount(g_robust), igraph::ecount(g_all)))
+  cat(sprintf("- 边保留率: %.1f%%\n", 100 * igraph::ecount(g_robust) / max(igraph::ecount(g_all), 1)))
+}
+
 if (exists("network_stats_df") && nrow(network_stats_df) >= 2) {
   cat("\n## 网络拓扑比较: CagA效应\n\n")
 
@@ -833,7 +1069,7 @@ if (exists("network_stats_df") && nrow(network_stats_df) >= 2) {
 
 cat("\n## 后续分析建议\n\n")
 cat("1. 使用SparCC替代Spearman获得更准确的组成型数据相关性\n")
-cat("2. 进行网络稳定性分析（bootstrap）\n")
+cat("2. 进行Zi-Pi分析识别keystone species\n")
 cat("3. 整合功能数据进行三方网络分析\n")
 ```
 
@@ -847,11 +1083,13 @@ cat("  - 01_bacteria_network_stats.csv\n")
 cat("  - 02_network_comparison.png\n")
 cat("  - 03_network_stats_barplot.png\n")
 cat("  - 04_bacteria_hub_species.csv\n")
+cat("  - 05_edge_stability_distribution.png\n")
+cat("  - 06_robust_hub_species.csv\n")
 if (has_phage) {
-  cat("  - 05_bacteria_phage_associations.csv\n")
-  cat("  - 06_bacteria_phage_network_stats.csv\n")
-  cat("  - 07_bacteria_phage_modularity_comparison.png\n")
-  cat("  - 08_bacteria_phage_network_2x2.png\n")
+  cat("  - 07_bacteria_phage_associations.csv\n")
+  cat("  - 08_bacteria_phage_network_stats.csv\n")
+  cat("  - 09_bacteria_phage_modularity_comparison.png\n")
+  cat("  - 10_bacteria_phage_network_2x2.png\n")
 }
 ```
 
