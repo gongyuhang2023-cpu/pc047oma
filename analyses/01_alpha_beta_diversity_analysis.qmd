@@ -204,7 +204,7 @@ count_mat_standard_species <- bracken_long_standard_species |>
 # dim(count_mat)
 # head(rownames(count_mat))
 # head(colnames(count_mat))
-count_mat_standard_species 
+# count_mat_standard_species 
 
 # Step 3：构建 tse_standard_species
 tse_standard_species <- TreeSummarizedExperiment(
@@ -259,7 +259,7 @@ ggsave(
   width = 8, height = 6, dpi = 300
 )
 
-tse_standard_species_ca_1
+# tse_standard_species_ca_1
 
 # 2. 针对ca的prevalence分析与 清洗（prevalence ＞10%）
 # 🌸注意：后面如果没有特别说明，都主要使用ca筛选后的子集，也就是tse_standard_species_ca
@@ -479,7 +479,7 @@ ggsave(
   width = 8, height = 6, dpi = 300
 )
 
-tse_standard_species_ca_3
+# tse_standard_species_ca_3
 
 
 # ------------------------------------------------------------------------------
@@ -1240,7 +1240,7 @@ ANCOM-BC 在属水平上发现 [Clostridium] (LFC=0.37) 和 [Ruminococcus] (LFC=
 
 ### 1.3.4 DAA可视化
 
-#### 3.4.1 ALDEx2 效应量可视化
+#### 1.3.4.1 ALDEx2 效应量可视化
 
 ```{r}
 #| label: daa-aldex2-effect-size-viz
@@ -1312,7 +1312,7 @@ if (nrow(daa_aldex2_data) > 0) {
 }
 ```
 
-#### 3.4.2 ANCOM-BC LFC 可视化
+#### 1.3.4.2 ANCOM-BC LFC 可视化
 
 ```{r}
 #| label: daa-ancombc-lfc-viz
