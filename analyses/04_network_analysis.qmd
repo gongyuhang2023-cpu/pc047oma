@@ -1075,6 +1075,246 @@ if (length(zi_pi_by_group) == 2) {
 }
 ```
 
+## 2.9 SparCC组成型数据相关性 (可选)
+
+**背景**：Spearman相关性在组成型数据（相对丰度）上存在偏差，因为各物种丰度总和恒为1，导致假性负相关。
+SparCC (Sparse Correlations for Compositional data) 专门解决这一问题。
+
+**方法**：使用`SpiecEasi`包实现SparCC，迭代估计真实相关性。
+
+```{r}
+#| label: part2-sparcc-check
+
+# 检查SpiecEasi是否安装
+sparcc_available <- requireNamespace("SpiecEasi", quietly = TRUE)
+
+if (!sparcc_available) {
+  cat("====== SparCC分析 ======\n\n")
+  cat("SpiecEasi包未安装，跳过SparCC分析。\n")
+  cat("安装方法:\n")
+  cat("  # 从Bioconductor安装\n")
+  cat("  BiocManager::install('SpiecEasi')\n")
+  cat("\n或从GitHub安装:\n")
+  cat("  devtools::install_github('zdk123/SpiecEasi')\n")
+} else {
+  cat("SpiecEasi包已安装，将进行SparCC分析。\n")
+}
+```
+
+```{r}
+#| label: part2-sparcc-analysis
+#| eval: !expr sparcc_available
+#| cache: true
+
+if (sparcc_available) {
+  library(SpiecEasi)
+
+  cat("\n====== SparCC分析 ======\n\n")
+
+  # 准备counts数据（SparCC需要整数counts）
+  # 使用原始counts而非相对丰度
+  bacteria_counts_filtered <- assay(tse_bacteria, "counts")
+
+  # 过滤低丰度物种
+  prevalence_counts <- rowSums(bacteria_counts_filtered > 0) / ncol(bacteria_counts_filtered)
+  bacteria_counts_filtered <- bacteria_counts_filtered[prevalence_counts >= 0.2, ]
+
+  # 取Top 50高丰度物种（SparCC计算密集）
+  mean_counts <- rowMeans(bacteria_counts_filtered)
+  top_species_sparcc <- names(sort(mean_counts, decreasing = TRUE))[1:min(50, length(mean_counts))]
+  bacteria_counts_sparcc <- bacteria_counts_filtered[top_species_sparcc, ]
+
+  cat("SparCC分析物种数:", nrow(bacteria_counts_sparcc), "\n")
+  cat("样本数:", ncol(bacteria_counts_sparcc), "\n\n")
+
+  # 运行SparCC（使用较少迭代以节省时间）
+  cat("运行SparCC（这可能需要几分钟）...\n")
+
+  sparcc_result <- tryCatch({
+    SpiecEasi::sparcc(t(bacteria_counts_sparcc), iter = 20, inner_iter = 10)
+  }, error = function(e) {
+    cat("SparCC计算出错:", conditionMessage(e), "\n")
+    NULL
+  })
+
+  if (!is.null(sparcc_result)) {
+    sparcc_cor <- sparcc_result$Cor
+    rownames(sparcc_cor) <- rownames(bacteria_counts_sparcc)
+    colnames(sparcc_cor) <- rownames(bacteria_counts_sparcc)
+
+    cat("SparCC相关矩阵计算完成\n")
+    cat("相关系数范围:", round(min(sparcc_cor), 3), "到", round(max(sparcc_cor[sparcc_cor < 1]), 3), "\n")
+  }
+}
+```
+
+### 2.9.1 SparCC vs Spearman对比
+
+```{r}
+#| label: part2-sparcc-comparison
+#| eval: !expr sparcc_available && exists("sparcc_cor")
+#| fig-width: 12
+#| fig-height: 5
+
+if (exists("sparcc_cor") && !is.null(sparcc_cor)) {
+  # 获取共同物种
+  common_species <- base::intersect(rownames(sparcc_cor), rownames(cor_matrix))
+
+  if (length(common_species) >= 10) {
+    sparcc_sub <- sparcc_cor[common_species, common_species]
+    spearman_sub <- cor_matrix[common_species, common_species]
+
+    # 提取上三角相关系数
+    sparcc_values <- sparcc_sub[upper.tri(sparcc_sub)]
+    spearman_values <- spearman_sub[upper.tri(spearman_sub)]
+
+    comparison_df <- data.frame(
+      Spearman = spearman_values,
+      SparCC = sparcc_values
+    )
+
+    # 相关性散点图
+    p_scatter <- ggplot(comparison_df, aes(x = Spearman, y = SparCC)) +
+      geom_point(alpha = 0.5, color = "steelblue") +
+      geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+      geom_smooth(method = "lm", se = TRUE, color = "darkblue", linewidth = 0.8) +
+      labs(
+        title = "SparCC vs Spearman Correlation",
+        subtitle = sprintf("Pearson r = %.3f | %d species pairs",
+                          cor(sparcc_values, spearman_values),
+                          length(sparcc_values)),
+        x = "Spearman Correlation",
+        y = "SparCC Correlation"
+      ) +
+      theme_bw(base_size = 12) +
+      theme(plot.title = element_text(face = "bold"))
+
+    # 差异分布
+    comparison_df$difference <- comparison_df$SparCC - comparison_df$Spearman
+
+    p_diff <- ggplot(comparison_df, aes(x = difference)) +
+      geom_histogram(binwidth = 0.05, fill = "steelblue", color = "white", alpha = 0.8) +
+      geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+      geom_vline(xintercept = mean(comparison_df$difference), color = "darkblue", linewidth = 1) +
+      annotate("text", x = mean(comparison_df$difference), y = Inf, vjust = 2,
+               label = sprintf("Mean diff: %.3f", mean(comparison_df$difference)),
+               color = "darkblue", fontface = "bold") +
+      labs(
+        title = "SparCC - Spearman Difference",
+        subtitle = "Positive = SparCC shows stronger correlation",
+        x = "Difference (SparCC - Spearman)",
+        y = "Count"
+      ) +
+      theme_bw(base_size = 12) +
+      theme(plot.title = element_text(face = "bold"))
+
+    print(p_scatter + p_diff)
+
+    ggsave(here::here("data", params$name, "11_sparcc_vs_spearman.png"),
+           plot = p_scatter + p_diff, width = 12, height = 5, dpi = 300)
+
+    # 统计总结
+    cat("\n====== SparCC vs Spearman 对比 ======\n\n")
+    cat("共同物种数:", length(common_species), "\n")
+    cat("物种对数:", length(sparcc_values), "\n")
+    cat("Spearman-SparCC相关性:", round(cor(sparcc_values, spearman_values), 4), "\n")
+    cat("平均差异 (SparCC - Spearman):", round(mean(comparison_df$difference), 4), "\n")
+    cat("差异标准差:", round(sd(comparison_df$difference), 4), "\n")
+
+    # 分类比较
+    spearman_strong <- sum(abs(spearman_values) >= 0.7)
+    sparcc_strong <- sum(abs(sparcc_values) >= 0.7)
+    cat("\n强相关 (|r| ≥ 0.7):\n")
+    cat("  Spearman:", spearman_strong, "\n")
+    cat("  SparCC:", sparcc_strong, "\n")
+  }
+}
+```
+
+### 2.9.2 SparCC网络构建
+
+```{r}
+#| label: part2-sparcc-network
+#| eval: !expr sparcc_available && exists("sparcc_cor")
+#| fig-width: 9
+#| fig-height: 8
+
+if (exists("sparcc_cor") && !is.null(sparcc_cor)) {
+  # 使用相同阈值构建SparCC网络
+  sparcc_threshold <- 0.5  # SparCC通常使用较低阈值
+
+  sparcc_adj <- abs(sparcc_cor) >= sparcc_threshold
+  diag(sparcc_adj) <- FALSE
+
+  g_sparcc <- igraph::graph_from_adjacency_matrix(sparcc_adj, mode = "undirected")
+
+  # 添加边权重
+  if (igraph::ecount(g_sparcc) > 0) {
+    edge_list_sp <- igraph::as_edgelist(g_sparcc)
+    edge_weights_sp <- sapply(1:nrow(edge_list_sp), function(i) {
+      sparcc_cor[edge_list_sp[i,1], edge_list_sp[i,2]]
+    })
+    igraph::E(g_sparcc)$weight <- edge_weights_sp
+    igraph::E(g_sparcc)$sign <- ifelse(edge_weights_sp > 0, "positive", "negative")
+  }
+
+  cat("\n====== SparCC网络统计 ======\n\n")
+  cat("相关性阈值:", sparcc_threshold, "\n")
+  cat("节点数:", igraph::vcount(g_sparcc), "\n")
+  cat("边数:", igraph::ecount(g_sparcc), "\n")
+
+  if (igraph::ecount(g_sparcc) > 0) {
+    pos_edges <- sum(igraph::E(g_sparcc)$sign == "positive")
+    neg_edges <- sum(igraph::E(g_sparcc)$sign == "negative")
+    cat("正相关边:", pos_edges, sprintf("(%.1f%%)", 100*pos_edges/igraph::ecount(g_sparcc)), "\n")
+    cat("负相关边:", neg_edges, sprintf("(%.1f%%)", 100*neg_edges/igraph::ecount(g_sparcc)), "\n")
+
+    # 与Spearman网络比较
+    cat("\n与Spearman网络对比:\n")
+    cat("  Spearman网络边数:", igraph::ecount(g_all), "\n")
+    cat("  SparCC网络边数:", igraph::ecount(g_sparcc), "\n")
+
+    # 可视化
+    if (igraph::ecount(g_sparcc) < 300) {
+      set.seed(42)
+      layout_sparcc <- igraph::layout_with_fr(g_sparcc)
+
+      igraph::V(g_sparcc)$size <- igraph::degree(g_sparcc) + 3
+      igraph::E(g_sparcc)$color <- ifelse(igraph::E(g_sparcc)$sign == "positive",
+                                           "#3498db", "#e74c3c")
+
+      par(mar = c(1, 1, 3, 1))
+      plot(g_sparcc,
+           layout = layout_sparcc,
+           vertex.label = NA,
+           vertex.color = "lightgray",
+           edge.width = abs(igraph::E(g_sparcc)$weight) * 2,
+           main = sprintf("SparCC Network (threshold ≥ %.2f)\nNodes: %d | Edges: %d | Blue=Positive, Red=Negative",
+                         sparcc_threshold, igraph::vcount(g_sparcc), igraph::ecount(g_sparcc)))
+    }
+
+    # 保存SparCC相关矩阵
+    write.csv(as.data.frame(sparcc_cor),
+              file = here::here("data", params$name, "12_sparcc_correlation_matrix.csv"))
+
+    # 保存网络统计
+    sparcc_stats <- data.frame(
+      method = c("Spearman", "SparCC"),
+      threshold = c(cor_threshold, sparcc_threshold),
+      n_nodes = c(igraph::vcount(g_all), igraph::vcount(g_sparcc)),
+      n_edges = c(igraph::ecount(g_all), igraph::ecount(g_sparcc)),
+      density = c(igraph::edge_density(g_all), igraph::edge_density(g_sparcc))
+    )
+
+    write.csv(sparcc_stats,
+              file = here::here("data", params$name, "13_spearman_vs_sparcc_stats.csv"),
+              row.names = FALSE)
+
+    cat("\nSparCC结果已保存\n")
+  }
+}
+```
+
 # Part 3: 细菌-噬菌体跨域网络 {#sec-part3}
 
 ```{r}
@@ -1119,7 +1359,7 @@ if (has_phage) {
     print(head(cross_pairs_df, 20))
 
     write.csv(cross_pairs_df,
-              file = here::here("data", params$name, "11_bacteria_phage_associations.csv"),
+              file = here::here("data", params$name, "14_bacteria_phage_associations.csv"),
               row.names = FALSE)
   } else {
     cat("未发现显著的细菌-噬菌体关联 (阈值:", cross_threshold, ")\n")
@@ -1218,7 +1458,7 @@ if (has_phage) {
   cat("噬菌体网络模块度变化:", round(phage_mod_change, 1), "%\n")
 
   write.csv(bact_phage_stats_df,
-            file = here::here("data", params$name, "12_bacteria_phage_network_stats.csv"),
+            file = here::here("data", params$name, "15_bacteria_phage_network_stats.csv"),
             row.names = FALSE)
 }
 ```
@@ -1264,7 +1504,7 @@ if (has_phage) {
   print(p_modularity_comparison)
 
   ggsave(
-    filename = here::here("data", params$name, "13_bacteria_phage_modularity_comparison.png"),
+    filename = here::here("data", params$name, "16_bacteria_phage_modularity_comparison.png"),
     plot = p_modularity_comparison,
     width = 8, height = 5, dpi = 300
   )
@@ -1288,7 +1528,7 @@ if (has_phage) {
     }
   }
 
-  png(here::here("data", params$name, "14_bacteria_phage_network_2x2.png"),
+  png(here::here("data", params$name, "17_bacteria_phage_network_2x2.png"),
       width = 1600, height = 1600, res = 150)
 
   par(mfrow = c(2, 2), mar = c(1, 1, 4, 1))
@@ -1381,7 +1621,7 @@ if (has_phage) {
 
   dev.off()
 
-  cat("2x2 网络对比图已保存: 14_bacteria_phage_network_2x2.png\n")
+  cat("2x2 网络对比图已保存: 17_bacteria_phage_network_2x2.png\n")
 }
 ```
 
@@ -1426,6 +1666,13 @@ if (exists("zi_pi_df") && nrow(zi_pi_df) > 0) {
   cat(sprintf("- Peripherals: %d\n", role_counts["Peripheral"] %||% 0))
 }
 
+if (exists("sparcc_available") && sparcc_available && exists("g_sparcc")) {
+  cat("\n## SparCC组成型数据网络\n\n")
+  cat(sprintf("- SparCC网络边数: %d\n", igraph::ecount(g_sparcc)))
+  cat(sprintf("- Spearman网络边数: %d\n", igraph::ecount(g_all)))
+  cat("- 方法改进: 校正组成型数据假性负相关\n")
+}
+
 if (exists("network_stats_df") && nrow(network_stats_df) >= 2) {
   cat("\n## 网络拓扑比较: CagA效应\n\n")
 
@@ -1446,9 +1693,9 @@ if (exists("network_stats_df") && nrow(network_stats_df) >= 2) {
 }
 
 cat("\n## 后续分析建议\n\n")
-cat("1. 使用SparCC替代Spearman获得更准确的组成型数据相关性\n")
-cat("2. 差异网络分析（NetShift）量化组间网络重构\n")
-cat("3. 整合功能数据进行三方网络分析\n")
+cat("1. 差异网络分析（NetShift）量化组间网络重构\n")
+cat("2. 整合功能数据进行三方网络分析\n")
+cat("3. 网络稳健性分析（节点移除模拟）\n")
 ```
 
 ## 5.2 输出文件列表
@@ -1467,11 +1714,16 @@ cat("  - 07_zi_pi_analysis.csv\n")
 cat("  - 08_zi_pi_plot.png\n")
 cat("  - 09_zi_pi_by_group.png\n")
 cat("  - 10_zi_pi_by_group.csv\n")
+if (sparcc_available && exists("sparcc_cor")) {
+  cat("  - 11_sparcc_vs_spearman.png\n")
+  cat("  - 12_sparcc_correlation_matrix.csv\n")
+  cat("  - 13_spearman_vs_sparcc_stats.csv\n")
+}
 if (has_phage) {
-  cat("  - 11_bacteria_phage_associations.csv\n")
-  cat("  - 12_bacteria_phage_network_stats.csv\n")
-  cat("  - 13_bacteria_phage_modularity_comparison.png\n")
-  cat("  - 14_bacteria_phage_network_2x2.png\n")
+  cat("  - 14_bacteria_phage_associations.csv\n")
+  cat("  - 15_bacteria_phage_network_stats.csv\n")
+  cat("  - 16_bacteria_phage_modularity_comparison.png\n")
+  cat("  - 17_bacteria_phage_network_2x2.png\n")
 }
 ```
 
