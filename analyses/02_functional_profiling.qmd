@@ -4630,7 +4630,7 @@ if (nrow(significant_drivers) > 0) {
 ### 13.9生物学解读总结
 
 ```{r}
-#| label: part9-summary
+#| label: part13-summary
 #| echo: false
 
 # 计算汇总统计

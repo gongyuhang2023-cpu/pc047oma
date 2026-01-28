@@ -145,7 +145,7 @@ set.seed(20261)
 #| label: theme-setup
 
 # 加载公共函数
-source(here::here("analyses", "R", "functions.R"))
+source(here::here("R", "functions.R"))
 
 # 设置发表级主题
 theme_set(theme_publication())
