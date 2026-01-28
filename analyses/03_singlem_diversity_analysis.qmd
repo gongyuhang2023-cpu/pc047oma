@@ -3708,7 +3708,8 @@ if (nrow(edges_df) > 0) {
   g <- igraph::graph_from_data_frame(edges_df, directed = FALSE, vertices = nodes_df)
   igraph::E(g)$layout_weight <- abs(igraph::E(g)$weight)
 
-  # 绘制网络
+  # 绘制网络 (设置 seed 和 repel 参数避免 render 卡住)
+  set.seed(42)
   p_network <- ggraph(g, layout = "fr", weights = igraph::E(g)$layout_weight) +
     geom_edge_link(
       aes(color = type, width = abs(weight),
@@ -3737,12 +3738,24 @@ if (nrow(edges_df) > 0) {
     ) +
     theme(plot.title = element_text(size = 14, face = "bold"), legend.position = "right")
 
-  print(p_network)
-
+  # 不用 print()，避免 knitr 捕获图形（可能导致 render 卡住）
+  # 直接用 ggsave 保存，然后在下一个代码块用 include_graphics 导入
   ggsave(here::here("data", params$name, "66_tripartite_network.png"), p_network, width = 14, height = 12, dpi = 300)
+  network_generated <- TRUE
 
 } else {
   cat("当前阈值下没有足够的边\n")
+  network_generated <- FALSE
+}
+```
+
+```{r}
+#| label: part6-tripartite-network-display
+#| echo: false
+
+# 导入刚才 ggsave 保存的图片
+if (exists("network_generated") && network_generated) {
+  knitr::include_graphics(here::here("data", params$name, "66_tripartite_network.png"))
 }
 ```
 
